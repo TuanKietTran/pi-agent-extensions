@@ -86,6 +86,14 @@ that devctl has native support.
   launch with missing `.so` errors). Put this in the project's own
   `postCreateCommand` once confirmed working, so `devctl create` picks it up
   automatically next time.
+- **If the project launches browsers with `headless: false`** (chatgpt-orchestrator
+  does this deliberately — headed browsers are harder for bot-detection to flag),
+  it will fail with "Missing X server or $DISPLAY" since the devbox has no display
+  server. Fix: `apt-get install -y xvfb xauth`, then prefix the actual command with
+  `xvfb-run -a` (e.g. `xvfb-run -a uv run orchestrator doctor`) — don't "fix" this
+  by flipping `headless: true`, that changes real application behavior, not just
+  the dev environment. Add `xvfb xauth` to the project's `postCreateCommand` once
+  confirmed working, same as the browser binary above.
 
 ## Hard-won gotchas (don't re-derive these)
 
