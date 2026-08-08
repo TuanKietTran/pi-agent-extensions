@@ -196,6 +196,11 @@ cmd_create() {
     port=$(next_free_port)
     echo "devctl: creating ${cname} on port ${port}"
 
+    # A previous devbox (this one or another) may have used this port with a
+    # different SSH host key. Clear any stale known_hosts entry now so the
+    # first connect to the new container doesn't hit a host-key mismatch.
+    ssh-keygen -R "[localhost]:${port}" >/dev/null 2>&1 || true
+
     local win_dir="${REMOTE_BASE_WIN}\\${name}"
     local linux_dir="${REMOTE_BASE_LINUX}/${name}"
 

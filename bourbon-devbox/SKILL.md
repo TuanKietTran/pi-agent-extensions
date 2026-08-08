@@ -60,6 +60,33 @@ dependencies installed. Compare to `devcontainer up` (see below) which spins up 
 *separate*, non-SSH-reachable container — don't use that for routine dev work now
 that devctl has native support.
 
+## Operational caveats (recreate/restore workflow)
+
+- **`postCreateCommand` only runs at `devctl create` time**, never on `devctl start`.
+  Editing `devcontainer.json` or a lockfile later does not re-trigger provisioning —
+  rerun the relevant command by hand inside the box, or `devctl rm` + `devctl create`
+  to fully re-provision from scratch.
+- **No `--restart=always`** on devbox containers. After bourbon reboots or Rancher
+  Desktop restarts, devboxes come back *stopped*. Always `devctl list` first;
+  `devctl start <name>` before assuming SSH will work.
+- **SSH host-key churn on recreate — devctl now handles this automatically.**
+  `cmd_create` runs `ssh-keygen -R "[localhost]:<port>"` before starting the new
+  container, so a stale known_hosts entry from a previous container on that port
+  doesn't block the first reconnect. (If you ever bypass devctl and hand-roll a
+  container on a reused port, you'll still need to do this yourself.)
+- **`.venv`/caches on the bind mount are cross-filesystem** from the container's own
+  layer (mount is a Windows path passed through via `/mnt/c/...`), so `uv` and
+  similar tools fall back from hardlinks to full copies — slower, not broken.
+  `export UV_LINK_MODE=copy` silences the warning.
+- **Browser automation projects (playwright/patchright) need an extra explicit
+  step** `postCreateCommand` usually doesn't include by default: installing the
+  actual browser binary, not just the Python package —
+  `uv run patchright install --with-deps chromium` (the `--with-deps` pulls in the
+  ~60 apt packages headless Chromium needs on Debian slim; skip it and it'll fail at
+  launch with missing `.so` errors). Put this in the project's own
+  `postCreateCommand` once confirmed working, so `devctl create` picks it up
+  automatically next time.
+
 ## Hard-won gotchas (don't re-derive these)
 
 - **`nerdctl inspect <name>` matches images too**, not just containers — a leftover
