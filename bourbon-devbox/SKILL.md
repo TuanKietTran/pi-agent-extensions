@@ -1,5 +1,5 @@
 ---
-description: Manage self-hosted sshd devboxes on bourbon (Windows box, Rancher Desktop/containerd/nerdctl, reached via Tailscale SSH). Use whenever the user wants to create, mount into, or auto-provision a devbox from a devcontainer.json — our DIY equivalent of GitHub Codespaces, without GitHub.
+description: Manage self-hosted sshd devboxes on bourbon (Windows box, Rancher Desktop/dockerd, reached via Tailscale SSH). Use whenever the user wants to create, mount into, or auto-provision a devbox from a devcontainer.json — our DIY equivalent of GitHub Codespaces, without GitHub.
 argument-hint: [create|list|start|stop|rm|ssh|logs] [name] [--mount host:container]
 ---
 
@@ -8,15 +8,24 @@ argument-hint: [create|list|start|stop|rm|ssh|logs] [name] [--mount host:contain
 ## The setup
 
 `bourbon` is a Windows machine reached over Tailscale SSH (`ssh bourbon`, user `cafe`).
-It runs **Rancher Desktop** with the **containerd/nerdctl** engine (not moby/dockerd) —
-there is no `docker` daemon. Containers are managed via `rdctl shell nerdctl ...`,
-which hops: this Mac → bourbon (Windows, cmd.exe) → `rdctl shell` → Rancher's WSL
-Linux VM (Alpine-based, `rancher-desktop-wsl-distro`) → nerdctl → containerd
-(`/run/k3s/containerd/containerd.sock`).
+It runs **Rancher Desktop** with the **dockerd (moby)** engine. This was
+previously documented here as containerd/nerdctl; that is **wrong** and cost real
+time — `nerdctl` aborts on a `/run/k3s/containerd/containerd.sock` that does not
+exist, and pointing it at the Docker-managed containerd socket only reaches the
+`moby` namespace, where container names come back blank because dockerd owns that
+metadata. Containers are managed via `wsl -d rancher-desktop -e docker ...`,
+which hops: this Mac → bourbon (Windows, cmd.exe) → the WSL Linux VM
+(Alpine/musl, `rancher-desktop-wsl-distro`) → docker → dockerd.
+
+`wsl -e docker` passes argv straight through **with no intervening shell**, so
+the quoting minefield below does not apply to calls made that way, and exit
+codes propagate correctly.
 
 **The tool: `/Users/kyle/.local/bin/devctl`.** Always use it instead of raw
-`ssh bourbon 'rdctl shell nerdctl ...'` calls — it already handles the quoting
-minefield below. Canonical backup lives at `scripts/devctl` in this skill's repo
+`ssh bourbon 'wsl -d rancher-desktop -e docker ...'` calls — it already handles the
+quoting minefield below. Canonical backup lives at `scripts/devctl` in this skill's repo
+(and `scripts/devctl-bourbon-local`, the variant that runs **on** bourbon with the
+ssh hop dropped — keep both in step)
 (`github.com/TuanKietTran/claude-skills`) — if you edit `~/.local/bin/devctl`,
 copy the change back here and commit, they will drift otherwise.
 
@@ -31,8 +40,10 @@ devctl start|stop|rm|ssh|logs <name>
 - Base image: `python:3.14-slim` + openssh-server/git/build-essential/curl/sudo/tmux,
   non-root user `kyle` with passwordless sudo, pubkey-only SSH.
 - `--mount` bind-mounts a path **as seen from bourbon's Rancher Desktop Linux VM**
-  (e.g. `/mnt/c/chatgpt-orchestrator` for `C:\chatgpt-orchestrator` — bourbon's `C:`
-  is mounted at `/mnt/c` inside that VM). Container path defaults to
+  (e.g. `/mnt/d/projects/chatgpt-orchestrator` for `D:\projects\chatgpt-orchestrator`
+  — bourbon's `C:` and `D:` are mounted at `/mnt/c` and `/mnt/d` inside that VM.
+  **Projects live on `D:\projects\` as of 2026-08-29**, not `C:\<name>`.)
+  Container path defaults to
   `/home/kyle/workspace`.
 
 ## devcontainer.json auto-provisioning (the Codespaces-equivalent bit)
@@ -75,7 +86,7 @@ that devctl has native support.
   doesn't block the first reconnect. (If you ever bypass devctl and hand-roll a
   container on a reused port, you'll still need to do this yourself.)
 - **`.venv`/caches on the bind mount are cross-filesystem** from the container's own
-  layer (mount is a Windows path passed through via `/mnt/c/...`), so `uv` and
+  layer (mount is a Windows path passed through via `/mnt/d/...`), so `uv` and
   similar tools fall back from hardlinks to full copies — slower, not broken.
   `export UV_LINK_MODE=copy` silences the warning.
 - **Browser automation projects (playwright/patchright) need an extra explicit
@@ -97,12 +108,30 @@ that devctl has native support.
 
 ## Hard-won gotchas (don't re-derive these)
 
-- **`nerdctl inspect <name>` matches images too**, not just containers — a leftover
+- **`docker inspect <name>` matches images too**, not just containers — a leftover
   image from a prior build makes `devctl create` falsely report "already exists".
-  Always use `nerdctl inspect --type container <name>` for existence checks.
+  Always use `docker container inspect <name>` for existence checks. (Same trap
+  applied to nerdctl's `inspect --type container`.)
+
+- **`docker pull` fails until a credential-helper shim exists.** Rancher ships a
+  **glibc-linked** `docker-credential-secretservice`, but this distro is
+  **musl with no `/lib64`**, so exec dies with `no such file or directory` — that
+  message is about the missing ELF interpreter, not a missing helper (the file is
+  right there). `DOCKER_CONFIG` overrides do not help. Fix: a POSIX-sh shim at
+  `/usr/local/bin/docker-credential-secretservice` (that dir precedes Rancher's in
+  PATH) answering `get` with empty credentials so pulls go anonymous. Without it,
+  `devctl create` dies at `load metadata for python:3.14-slim`. A Rancher upgrade
+  may reset it.
+
+- **In Git Bash, a `/var/run/...` argument gets rewritten** to
+  `C:/Program Files/Git/var/run/...` by MSYS path conversion, which makes socket
+  errors name a path that was never real. Set `MSYS_NO_PATHCONV=1` when
+  diagnosing.
 - **Quoting survives exactly one round-trip of naive passthrough, no more.** The
   chain is: bash (this Mac) → single `ssh bourbon "<string>"` → Windows cmd.exe →
-  `rdctl shell` → Linux VM shell → (optionally) `nerdctl exec` → container shell.
+  `wsl -e` → Linux VM → (optionally) `docker exec` → container shell.
+  Note this bites only when a *shell* sits in the chain: `wsl -d rancher-desktop
+  -e docker ...` run directly on bourbon takes argv verbatim and is safe.
   Anything with pipes, `&&`, quotes, or multi-line content **must** be base64-encoded
   locally and decoded remotely (`echo <b64> | base64 -d | sh`) — see
   `container_exec_script()` in devctl. Don't try to hand-quote through more than one
@@ -116,19 +145,19 @@ that devctl has native support.
   (uv, nvm, etc.), use `ssh host 'bash -lc "..."'`.
 - Rancher Desktop's WSL VM has a real `/usr/bin/docker` binary, but no
   `dockerd`/socket — running it fails looking for `/var/run/docker.sock`. There's a
-  working shim at `/usr/local/bin/docker` in that VM (`exec nerdctl "$@"`) which
-  earlier in PATH, so `docker` commands issued *inside that VM* transparently become
-  `nerdctl` calls. This was needed to get `@devcontainers/cli` working there at all.
+  working `docker` at `/usr/bin/docker` talking to the real dockerd. (An older note
+  here described a `/usr/local/bin/docker` shim that exec'd nerdctl; that is no
+  longer what is on the box.)
 
 ## Fallback: full devcontainer.json spec compliance via `@devcontainers/cli`
 
 Node/npm and `@devcontainers/cli` are installed inside the Rancher Desktop WSL VM
-(`ssh bourbon 'rdctl shell devcontainer --version'`), for cases devctl's lightweight
+(`ssh bourbon 'wsl -d rancher-desktop -e devcontainer --version'`), for cases devctl's lightweight
 `postCreateCommand`-only path can't handle (full `features`, lifecycle ordering,
 `build` args, etc.):
 
 ```
-ssh bourbon 'rdctl shell sh -c "devcontainer up --workspace-folder /mnt/c/<project>"'
+ssh bourbon 'wsl -d rancher-desktop -e sh -c "devcontainer up --workspace-folder /mnt/d/projects/<project>"'
 ```
 
 This is spec-correct (same engine as VS Code/Codespaces) but creates a **separate**
@@ -141,7 +170,7 @@ fails to start with a `chdir` error.
 
 ## Debugging primitives
 
-- Raw shell in the Linux VM: `ssh bourbon 'rdctl shell sh -c "<cmd>"'`
-- List everything: `ssh bourbon 'rdctl shell nerdctl ps -a --format "{{.Names}}|{{.Status}}|{{.Ports}}"'`
-- Exec into a running container: `ssh bourbon 'rdctl shell nerdctl exec <cname> <cmd>'`
+- Raw shell in the Linux VM: `ssh bourbon 'wsl -d rancher-desktop -e sh -c "<cmd>"'`
+- List everything: `ssh bourbon 'wsl -d rancher-desktop -e docker ps -a --format "{{.Names}}|{{.Status}}|{{.Ports}}"'`
+- Exec into a running container: `ssh bourbon 'wsl -d rancher-desktop -e docker exec <cname> <cmd>'`
 - `devctl list` is the friendly version, filtered to `*-devbox` names.

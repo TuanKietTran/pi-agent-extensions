@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage sshd-in-a-container devboxes on bourbon's Rancher Desktop (containerd/nerdctl).
+# Manage sshd-in-a-container devboxes on bourbon's Rancher Desktop (dockerd/moby).
 # Mirrors the hand-built myauris-devbox/zed-devbox pattern already in use.
 set -euo pipefail
 
@@ -96,21 +96,21 @@ container_exec_script() {
     local cname="$1" script="$2"
     local b64
     b64=$(printf '%s' "$script" | base64 | tr -d '\n')
-    ssh "$BOURBON" "rdctl shell nerdctl exec ${cname} sh -c \"echo ${b64} | base64 -d | sh\""
+    ssh "$BOURBON" "wsl -d rancher-desktop -e docker exec ${cname} sh -c \"echo ${b64} | base64 -d | sh\""
 }
 
 provision_devcontainer() {
     local cname="$1" workdir="$2"
     local dcpath="${workdir}/.devcontainer/devcontainer.json"
 
-    if ! ssh "$BOURBON" "rdctl shell nerdctl exec ${cname} test -f ${dcpath}" >/dev/null 2>&1; then
+    if ! ssh "$BOURBON" "wsl -d rancher-desktop -e docker exec ${cname} test -f ${dcpath}" >/dev/null 2>&1; then
         return
     fi
 
     echo "devctl: found devcontainer.json, extracting postCreateCommand..."
     local parse_b64 postcmd
     parse_b64=$(printf '%s' "$DEVCONTAINER_PARSE_PY" | base64 | tr -d '\n')
-    postcmd=$(ssh "$BOURBON" "rdctl shell nerdctl exec ${cname} sh -c \"echo ${parse_b64} | base64 -d | python3 - ${dcpath}\"" 2>/dev/null || true)
+    postcmd=$(ssh "$BOURBON" "wsl -d rancher-desktop -e docker exec ${cname} sh -c \"echo ${parse_b64} | base64 -d | python3 - ${dcpath}\"" 2>/dev/null || true)
 
     if [[ -z "$postcmd" ]]; then
         echo "devctl: no postCreateCommand found, skipping provisioning"
@@ -127,12 +127,17 @@ cd '${workdir}'
 ${postcmd}
 "
     echo "devctl: fixing ownership of /home/kyle for kyle..."
-    ssh "$BOURBON" "rdctl shell nerdctl exec ${cname} chown -R kyle:kyle /home/kyle"
+    ssh "$BOURBON" "wsl -d rancher-desktop -e docker exec ${cname} chown -R kyle:kyle /home/kyle"
     echo "devctl: devcontainer.json provisioning complete"
 }
 
 remote() { ssh "$BOURBON" "$@"; }
-nerdctl() { ssh "$BOURBON" "rdctl shell nerdctl $*"; }
+# bourbon's Rancher Desktop runs dockerd (moby), NOT k3s/containerd, so the
+# nerdctl socket (/run/k3s/containerd/containerd.sock) does not exist there.
+# Drive the real engine through the WSL distro instead. Note `docker container
+# inspect` rather than plain `docker inspect`: the latter matches images too,
+# the same trap nerdctl has.
+nerdctl() { ssh "$BOURBON" "wsl -d rancher-desktop -e docker $*"; }
 
 require_name() {
     local name="$1"
@@ -144,7 +149,7 @@ require_name() {
 
 next_free_port() {
     local used
-    used=$(ssh "$BOURBON" 'rdctl shell nerdctl ps -a --format "{{.Ports}}"' 2>/dev/null \
+    used=$(ssh "$BOURBON" 'wsl -d rancher-desktop -e docker ps -a --format "{{.Ports}}"' 2>/dev/null \
         | grep -oE ':[0-9]+->22/tcp' | grep -oE '[0-9]+' || true)
     local port=$BASE_PORT
     while grep -qx "$port" <<<"$used"; do
@@ -156,7 +161,7 @@ next_free_port() {
 cmd_list() {
     echo "devboxes on bourbon:"
     printf '%-24s %-10s %s\n' NAME STATUS PORTS
-    ssh "$BOURBON" 'rdctl shell nerdctl ps -a --format "{{.Names}}|{{.Status}}|{{.Ports}}"' \
+    ssh "$BOURBON" 'wsl -d rancher-desktop -e docker ps -a --format "{{.Names}}|{{.Status}}|{{.Ports}}"' \
         | awk -F'|' '$1 ~ /-devbox$/ { printf "%-24s %-10s %s\n", $1, $2, $3 }'
 }
 
@@ -187,7 +192,7 @@ cmd_create() {
     require_name "$name"
     local cname="${name}-devbox"
 
-    if ssh "$BOURBON" "rdctl shell nerdctl inspect --type container ${cname}" >/dev/null 2>&1; then
+    if ssh "$BOURBON" "wsl -d rancher-desktop -e docker container inspect ${cname}" >/dev/null 2>&1; then
         echo "devctl: container ${cname} already exists" >&2
         exit 1
     fi
