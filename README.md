@@ -13,7 +13,7 @@ extension system in `exts/`.
 | Extension | What it does |
 |---|---|
 | `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
-| `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens, and raises a visible error on any `length` stop. |
+| `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `claude-dispatch/` | Routes a pi session to the `claude-cli` provider. Disable per-run with `--no-claude-dispatch`. |
 
