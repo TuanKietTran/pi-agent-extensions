@@ -1,5 +1,5 @@
 /**
- * answer-floor — stops the model's own reply from being cut off mid-sentence.
+ * answer-floor — keeps the model's reply from being cut off, and finishes it when it is.
  *
  * Companion to context-guard.ts, which trims oversized *tool results*. This one
  * protects the opposite side: the answer budget.
@@ -15,25 +15,57 @@
  * tokens of context yielded max_tokens = 8192 - 4024 - 4096 = 72, and the reply
  * stopped after exactly 72 tokens with finish_reason "length".
  *
- * The settings are now sized so this cannot happen (compaction.reserveTokens >=
- * 4096 + model.maxTokens keeps `available` above the model's own ceiling). This
- * hook is the backstop for when they drift — a new model added to models.json
- * with a small window, or a hand-edited reserveTokens. It restores a usable
- * floor and says so, because a squeezed budget is a configuration bug and should
- * never pass unnoticed.
+ * Two defences, in order:
  *
- * The floor is safe to raise: llama.cpp bounds generation by its own n_ctx and
- * simply stops, so an over-large max_tokens cannot overflow the server. Only the
+ *  1. Before the request, restore a usable floor under max_tokens.
+ *  2. After a reply that still stopped on "length", fix it rather than report it:
+ *     compact if the budget was squeezed, then tell the agent to carry on. A
+ *     truncated reply is recoverable — the partial text is still in the session,
+ *     so the model can resume from it — and making the user notice, diagnose and
+ *     type /compact is work the extension already has the information to do.
+ *
+ * Raising the floor is safe: llama.cpp bounds generation by its own n_ctx and
+ * stops cleanly, so an over-large max_tokens cannot overflow the server. Only the
  * prompt can do that, and this hook does not touch the prompt.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** Enough to finish a reasoning block and the answer that follows it. */
 const FLOOR_TOKENS = 2048;
 
+/** pi's hardcoded CONTEXT_SAFETY_TOKENS, mirrored so we can predict the squeeze. */
+const SAFETY_TOKENS = 4096;
+
 /** The fields the various provider payloads use for the output cap. */
 const CAP_FIELDS = ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as const;
+
+/**
+ * A model that keeps stopping on "length" would otherwise be resumed forever.
+ * Three recoveries is enough for a genuinely long answer; past that the cause is
+ * something a retry will not fix.
+ */
+const MAX_AUTO_CONTINUES = 3;
+
+const CONTINUE_PROMPT =
+	"Your previous reply was cut off by the output limit, mid-sentence. Continue it from " +
+	"exactly where it stopped. Do not repeat what you already wrote, do not restart, and do " +
+	"not apologise — just carry straight on.";
+
+let consecutiveContinues = 0;
+
+interface ModelShape {
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+/** Tokens the next reply would get, by pi's own arithmetic. */
+function budgetAhead(ctx: ExtensionContext): { available: number; wanted: number } | undefined {
+	const model = ctx.model as ModelShape | undefined;
+	if (!model?.contextWindow || !model.maxTokens) return undefined;
+	const used = ctx.getContextUsage()?.tokens ?? 0;
+	return { available: model.contextWindow - used - SAFETY_TOKENS, wanted: model.maxTokens };
+}
 
 export default function (pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
@@ -41,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 		if (!payload) return;
 
 		// Never ask for more than the model is declared to produce.
-		const ceiling = (ctx.model as { maxTokens?: number } | undefined)?.maxTokens;
+		const ceiling = (ctx.model as ModelShape | undefined)?.maxTokens;
 		const floor = ceiling && ceiling > 0 ? Math.min(FLOOR_TOKENS, ceiling) : FLOOR_TOKENS;
 
 		let patched: Record<string, unknown> | undefined;
@@ -50,27 +82,58 @@ export default function (pi: ExtensionAPI) {
 			if (typeof current !== "number" || current >= floor) continue;
 			patched ??= { ...payload };
 			patched[field] = floor;
-			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`answer-floor: ${field} was ${current}, raised to ${floor}. ` +
-						`Context is close to the window — compact or widen it.`,
-					"info",
-				);
-			}
 		}
 		return patched;
 	});
 
-	// A "length" stop is the model being interrupted, not finishing. Surface it:
-	// silent truncation is what made the original failure so hard to spot.
 	pi.on("message_end", (event, ctx) => {
 		const message = event.message as { role?: string; stopReason?: string } | undefined;
-		if (message?.role !== "assistant" || message.stopReason !== "length") return;
-		if (!ctx.hasUI) return;
-		ctx.ui.notify(
-			"Reply hit the output cap and was cut off — it is incomplete. " +
-				"Ask it to continue, or run /compact to free budget.",
-			"error",
-		);
+		if (message?.role !== "assistant") return;
+
+		if (message.stopReason !== "length") {
+			consecutiveContinues = 0;
+			return;
+		}
+
+		if (consecutiveContinues >= MAX_AUTO_CONTINUES) {
+			consecutiveContinues = 0;
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					`Reply hit the output cap ${MAX_AUTO_CONTINUES} times in a row; not resuming again. ` +
+						`Widen the model's context window or lower what you are asking for in one go.`,
+					"error",
+				);
+			}
+			return;
+		}
+		consecutiveContinues++;
+
+		const resume = () => pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" });
+
+		// Squeezed budget or simply a long answer? Only the first needs compaction,
+		// and compacting a nearly-empty context would throw away history for nothing.
+		const budget = budgetAhead(ctx);
+		if (!budget || budget.available >= budget.wanted) {
+			if (ctx.hasUI) ctx.ui.notify("Reply hit the output cap — continuing it.", "info");
+			resume();
+			return;
+		}
+
+		if (ctx.hasUI) {
+			ctx.ui.notify(
+				`Reply was cut off: only ${Math.max(0, budget.available)} of ${budget.wanted} output ` +
+					`tokens were left. Compacting, then continuing.`,
+				"info",
+			);
+		}
+		ctx.compact({
+			onComplete: resume,
+			onError: (error: Error) => {
+				// Compaction failing is not fatal here — the reply is still worth
+				// finishing on whatever budget remains.
+				if (ctx.hasUI) ctx.ui.notify(`Compaction failed (${error.message}); continuing anyway.`, "error");
+				resume();
+			},
+		});
 	});
 }
