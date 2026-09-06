@@ -62,7 +62,9 @@ backstop for when that rule drifts — a new model, a hand-edited setting.
 
 Run `/remote-control start` to create a temporary HTTPS pairing link through
 `cloudflared`, or `/remote-control local` for a loopback-only link. The built-in browser UI can view the conversation, stream replies, send or
-steer prompts, and abort the current operation.
+steer prompts, and abort the current operation. On page reload it restores the
+authenticated session from its secure cookie, renders an immediate `/api/state`
+snapshot, and then attaches `/api/events` SSE for live updates.
 
 The same server exposes an OpenAI-compatible facade for a richer existing UI:
 

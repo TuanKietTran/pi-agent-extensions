@@ -176,7 +176,7 @@ function render(s){current=s;$('dot').className='dot'+(s.connected?' on':'');$('
 function streamDelta(delta){if(!live){live=document.createElement('div');live.className='msg assistant';live.innerHTML='<div class="role">assistant</div><div class="stream"></div>';messages.append(live)}live.querySelector('.stream').textContent+=delta;messages.scrollTop=messages.scrollHeight}
 function parseSSE(reader){const dec=new TextDecoder();let buf='';return(async()=>{for(;;){const {done,value}=await reader.read();if(done)throw Error('Disconnected');buf+=dec.decode(value,{stream:true});let i;while((i=buf.indexOf('\n\n'))>=0){const chunk=buf.slice(0,i);buf=buf.slice(i+2);let event='message',data='';for(const line of chunk.split('\n')){if(line.startsWith('event: '))event=line.slice(7);if(line.startsWith('data: '))data+=line.slice(6)}if(!data)continue;const value=JSON.parse(data);if(event==='sync')render(value);else if(event==='delta')streamDelta(value.delta||'')}}})()}
 async function api(path,opts={}){const r=await fetch(path,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});if(!r.ok)throw Error((await r.json().catch(()=>({}))).error||r.statusText);return r}
-async function boot(){try{const token=location.hash.slice(1);if(token){await api('/api/pair',{method:'POST',headers:{authorization:'Bearer '+token}});history.replaceState(null,'',location.pathname)}const r=await fetch('/api/events');if(!r.ok)throw Error('Pairing required. Open the complete link shown by Pi.');parseSSE(r.body.getReader()).catch(reconnect)}catch(e){fail(e.message)}}
+async function boot(){try{const token=location.hash.slice(1);if(token){await api('/api/pair',{method:'POST',headers:{authorization:'Bearer '+token}});history.replaceState(null,'',location.pathname)}const initial=await fetch('/api/state');if(!initial.ok)throw Error('Pairing required. Open the complete link shown by Pi.');render(await initial.json());const r=await fetch('/api/events');if(!r.ok)throw Error('Live connection failed.');parseSSE(r.body.getReader()).catch(reconnect)}catch(e){fail(e.message)}}
 function reconnect(e){fail(e.message+' — reconnecting…');setTimeout(()=>location.reload(),2000)}function fail(msg){$('banner').style.display='block';$('banner').textContent=msg;$('dot').className='dot'}
 $('form').onsubmit=async e=>{e.preventDefault();const message=box.value.trim();if(!message)return;send.disabled=true;try{await api('/api/prompt',{method:'POST',body:JSON.stringify({message,mode:'steer'})});box.value=''}catch(e){fail(e.message)}finally{send.disabled=false;box.focus()}};
 box.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('form').requestSubmit()}};box.oninput=()=>{box.style.height='auto';box.style.height=Math.min(box.scrollHeight,160)+'px'};
@@ -267,8 +267,13 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
   if (!authorized(req)) return json(res, 401, { error: "Not paired" });
   if (!sameOrigin(req)) return json(res, 403, { error: "Origin rejected" });
 
+  if (req.method === "GET" && url.pathname === "/api/state") {
+    return json(res, 200, snapshot());
+  }
+
   if (req.method === "GET" && url.pathname === "/api/events") {
-    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
+    res.flushHeaders();
     res.write(`event: sync\ndata: ${JSON.stringify(snapshot())}\n\n`);
     state.clients.add(res);
     const heartbeat = setInterval(() => res.write(": ping\n\n"), 15_000);
