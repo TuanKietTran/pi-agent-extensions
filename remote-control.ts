@@ -13,6 +13,7 @@ type Completion = {
   stream: boolean;
   created: number;
   text: string;
+  heartbeat?: ReturnType<typeof setInterval>;
 };
 type RemoteState = {
   api?: ExtensionAPI;
@@ -136,6 +137,7 @@ function pushCompletionDelta(delta: string): void {
 
 function settleCompletions(): void {
   for (const completion of [...state.completions]) {
+    if (completion.heartbeat) clearInterval(completion.heartbeat);
     if (completion.stream) {
       completion.response.write(`data: ${completionChunk(completion, "", "stop")}\n\n`);
       completion.response.end("data: [DONE]\n\n");
@@ -234,15 +236,24 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
         };
         state.completions.add(completion);
         if (completion.stream) {
-          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache, no-transform",
+            connection: "keep-alive",
+            "x-accel-buffering": "no",
+          });
+          res.flushHeaders();
           res.write(`data: ${completionChunk(completion, "")}\n\n`);
+          completion.heartbeat = setInterval(() => res.write(": ping\n\n"), 15_000);
         }
         res.on("close", () => {
+          if (completion.heartbeat) clearInterval(completion.heartbeat);
           if (!res.writableEnded) state.completions.delete(completion);
         });
         try { state.api.sendUserMessage(prompt); }
         catch (error) {
           state.completions.delete(completion);
+          if (completion.heartbeat) clearInterval(completion.heartbeat);
           if (!res.headersSent) json(res, 500, { error: { message: error instanceof Error ? error.message : String(error) } });
           else res.end(`data: ${JSON.stringify({ error: { message: String(error) } })}\n\ndata: [DONE]\n\n`);
         }
@@ -336,7 +347,10 @@ function stop(): void {
   state.publicUrl = undefined;
   for (const client of state.clients) client.end();
   state.clients.clear();
-  for (const completion of state.completions) completion.response.end();
+  for (const completion of state.completions) {
+    if (completion.heartbeat) clearInterval(completion.heartbeat);
+    completion.response.end();
+  }
   state.completions.clear();
   state.server?.close();
   state.server = undefined;

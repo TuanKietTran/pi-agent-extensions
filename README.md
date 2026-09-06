@@ -73,7 +73,9 @@ Model:    pi-session
 ```
 
 It implements `GET /v1/models` and streaming or non-streaming
-`POST /v1/chat/completions`. The facade deliberately forwards only the latest
+`POST /v1/chat/completions`. Streaming uses standard OpenAI SSE chunks, disables
+proxy buffering, and sends heartbeat comments during long tool calls. The
+facade deliberately forwards only the latest
 user message because pi remains the canonical owner of conversation history,
 tools, and execution state. It works with Open WebUI and clients that permit a
 custom OpenAI endpoint, including Conduit on iOS and Android. Official ChatGPT
