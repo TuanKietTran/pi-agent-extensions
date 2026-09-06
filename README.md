@@ -16,6 +16,7 @@ extension system in `exts/`.
 | `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `claude-dispatch/` | Routes a pi session to the `claude-cli` provider. Disable per-run with `--no-claude-dispatch`. |
+| `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 
 The three single-file extensions exist because of one shared root cause: pi's
 context accounting assumes a large hosted model, and every default it picks is
@@ -56,6 +57,17 @@ Compaction triggers at `contextWindow − reserveTokens`, so the reserve has to
 cover the hidden safety margin *plus* a full reply. Anything less and compaction
 fires only after the budget has already collapsed. `answer-floor.ts` is the
 backstop for when that rule drifts — a new model, a hand-edited setting.
+
+## Remote control
+
+Run `/remote-control start` to create a temporary HTTPS pairing link through
+`cloudflared`, or `/remote-control local` for a loopback-only link. The browser
+can view the conversation, stream replies, send or steer prompts, and abort the
+current operation.
+
+The URL fragment contains a bearer-strength pairing secret. Anyone with the
+complete link can control pi and all tools available to the session, so keep it
+private and run `/remote-control stop` when finished.
 
 ## Layout
 
