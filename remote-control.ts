@@ -7,6 +7,13 @@ import { networkInterfaces } from "node:os";
 const STATE_KEY = Symbol.for("pi.remote-control.state.v1");
 
 type Client = ServerResponse<IncomingMessage>;
+type Completion = {
+  id: string;
+  response: ServerResponse;
+  stream: boolean;
+  created: number;
+  text: string;
+};
 type RemoteState = {
   api?: ExtensionAPI;
   ctx?: ExtensionContext;
@@ -16,6 +23,7 @@ type RemoteState = {
   publicUrl?: string;
   token: string;
   clients: Set<Client>;
+  completions: Set<Completion>;
   busy: boolean;
 };
 
@@ -23,8 +31,10 @@ const globals = globalThis as typeof globalThis & { [STATE_KEY]?: RemoteState };
 const state: RemoteState = globals[STATE_KEY] ?? {
   token: randomBytes(32).toString("base64url"),
   clients: new Set(),
+  completions: new Set(),
   busy: false,
 };
+state.completions ??= new Set();
 globals[STATE_KEY] = state;
 
 function json(res: ServerResponse, status: number, value: unknown): void {
@@ -32,13 +42,21 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value));
 }
 
+function validToken(supplied: string): boolean {
+  const a = Buffer.from(supplied), b = Buffer.from(state.token);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 function authorized(req: IncomingMessage): boolean {
   const cookie = req.headers.cookie ?? "";
   const found = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("pi_remote="));
   if (!found) return false;
-  const supplied = Buffer.from(decodeURIComponent(found.slice("pi_remote=".length)));
-  const expected = Buffer.from(state.token);
-  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+  return validToken(decodeURIComponent(found.slice("pi_remote=".length)));
+}
+
+function apiAuthorized(req: IncomingMessage): boolean {
+  const bearer = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
+  return validToken(bearer) || authorized(req);
 }
 
 function sameOrigin(req: IncomingMessage): boolean {
@@ -99,6 +117,51 @@ function sync(): void {
   broadcast("sync", snapshot());
 }
 
+function completionChunk(completion: Completion, delta: string, finishReason: string | null = null): string {
+  return JSON.stringify({
+    id: completion.id,
+    object: "chat.completion.chunk",
+    created: completion.created,
+    model: "pi-session",
+    choices: [{ index: 0, delta: delta ? { content: delta } : {}, finish_reason: finishReason }],
+  });
+}
+
+function pushCompletionDelta(delta: string): void {
+  for (const completion of state.completions) {
+    completion.text += delta;
+    if (completion.stream) completion.response.write(`data: ${completionChunk(completion, delta)}\n\n`);
+  }
+}
+
+function settleCompletions(): void {
+  for (const completion of [...state.completions]) {
+    if (completion.stream) {
+      completion.response.write(`data: ${completionChunk(completion, "", "stop")}\n\n`);
+      completion.response.end("data: [DONE]\n\n");
+    } else {
+      json(completion.response, 200, {
+        id: completion.id,
+        object: "chat.completion",
+        created: completion.created,
+        model: "pi-session",
+        choices: [{ index: 0, message: { role: "assistant", content: completion.text }, finish_reason: "stop" }],
+      });
+    }
+    state.completions.delete(completion);
+  }
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (!part || typeof part !== "object") return "";
+    const value = part as { type?: string; text?: string };
+    return value.type === "text" && typeof value.text === "string" ? value.text : "";
+  }).filter(Boolean).join("\n");
+}
+
 const PAGE = String.raw`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Pi Remote Control</title><style>
@@ -136,11 +199,58 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 
   if (req.method === "POST" && url.pathname === "/api/pair") {
     const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
-    const a = Buffer.from(supplied), b = Buffer.from(state.token);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) return json(res, 401, { error: "Invalid pairing token" });
+    if (!validToken(supplied)) return json(res, 401, { error: "Invalid pairing token" });
     const secure = req.headers["x-forwarded-proto"] === "https";
     res.setHeader("set-cookie", `pi_remote=${encodeURIComponent(state.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}`);
     return json(res, 200, { ok: true });
+  }
+
+  if (url.pathname.startsWith("/v1/")) {
+    res.setHeader("access-control-allow-origin", "*");
+    res.setHeader("access-control-allow-headers", "authorization, content-type");
+    res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (!apiAuthorized(req)) return json(res, 401, { error: { message: "Invalid API key", type: "authentication_error" } });
+
+    if (req.method === "GET" && url.pathname === "/v1/models") {
+      return json(res, 200, { object: "list", data: [{ id: "pi-session", object: "model", created: 0, owned_by: "pi" }] });
+    }
+
+    if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+      void body(req).then((value) => {
+        if (!state.api || !state.ctx) return json(res, 503, { error: { message: "Pi session is unavailable" } });
+        if (!state.ctx.isIdle() || state.completions.size > 0) return json(res, 409, { error: { message: "Pi is already working" } });
+        const messages = Array.isArray(value.messages) ? value.messages : [];
+        const lastUser = [...messages].reverse().find((message) => message && typeof message === "object" && (message as { role?: string }).role === "user") as { content?: unknown } | undefined;
+        const prompt = messageText(lastUser?.content).trim();
+        if (!prompt) return json(res, 400, { error: { message: "A user message is required" } });
+
+        const completion: Completion = {
+          id: `chatcmpl-${randomBytes(12).toString("hex")}`,
+          response: res,
+          stream: value.stream === true,
+          created: Math.floor(Date.now() / 1000),
+          text: "",
+        };
+        state.completions.add(completion);
+        if (completion.stream) {
+          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive" });
+          res.write(`data: ${completionChunk(completion, "")}\n\n`);
+        }
+        res.on("close", () => {
+          if (!res.writableEnded) state.completions.delete(completion);
+        });
+        try { state.api.sendUserMessage(prompt); }
+        catch (error) {
+          state.completions.delete(completion);
+          if (!res.headersSent) json(res, 500, { error: { message: error instanceof Error ? error.message : String(error) } });
+          else res.end(`data: ${JSON.stringify({ error: { message: String(error) } })}\n\ndata: [DONE]\n\n`);
+        }
+      }).catch((error) => json(res, 400, { error: { message: error.message } }));
+      return;
+    }
+
+    return json(res, 404, { error: { message: "Not found" } });
   }
 
   if (!authorized(req)) return json(res, 401, { error: "Not paired" });
@@ -226,6 +336,8 @@ function stop(): void {
   state.publicUrl = undefined;
   for (const client of state.clients) client.end();
   state.clients.clear();
+  for (const completion of state.completions) completion.response.end();
+  state.completions.clear();
   state.server?.close();
   state.server = undefined;
   state.port = undefined;
@@ -244,10 +356,13 @@ export default function remoteControl(pi: ExtensionAPI) {
     sync();
   });
   pi.on("agent_start", async () => { state.busy = true; sync(); });
-  pi.on("agent_settled", async () => { state.busy = false; sync(); });
+  pi.on("agent_settled", async () => { state.busy = false; settleCompletions(); sync(); });
   pi.on("message_update", async (event) => {
     const update = event.assistantMessageEvent;
-    if (update.type === "text_delta") broadcast("delta", { delta: update.delta });
+    if (update.type === "text_delta") {
+      broadcast("delta", { delta: update.delta });
+      pushCompletionDelta(update.delta);
+    }
   });
   pi.on("message_end", async () => sync());
   pi.on("tool_execution_start", async (event) => broadcast("tool", { phase: "start", name: event.toolName }));
@@ -289,7 +404,8 @@ export default function remoteControl(pi: ExtensionAPI) {
         ctx.ui.setWidget("remote-control", [
           "Pi remote control is active",
           url,
-          "Anyone with this link can control Pi and its tools. Use /remote-control stop when done.",
+          `OpenAI clients: base ${base}/v1 · model pi-session · API key ${state.token}`,
+          "Anyone with this link or API key can control Pi and its tools. Use /remote-control stop when done.",
         ], { placement: "aboveEditor" });
         if (process.platform === "darwin") {
           const clipboard = spawn("pbcopy");

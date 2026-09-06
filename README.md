@@ -61,13 +61,37 @@ backstop for when that rule drifts — a new model, a hand-edited setting.
 ## Remote control
 
 Run `/remote-control start` to create a temporary HTTPS pairing link through
-`cloudflared`, or `/remote-control local` for a loopback-only link. The browser
-can view the conversation, stream replies, send or steer prompts, and abort the
-current operation.
+`cloudflared`, or `/remote-control local` for a loopback-only link. The built-in browser UI can view the conversation, stream replies, send or
+steer prompts, and abort the current operation.
+
+The same server exposes an OpenAI-compatible facade for a richer existing UI:
+
+```text
+Base URL: https://<tunnel-host>/v1
+API key:  <the token after # in the pairing URL>
+Model:    pi-session
+```
+
+It implements `GET /v1/models` and streaming or non-streaming
+`POST /v1/chat/completions`. The facade deliberately forwards only the latest
+user message because pi remains the canonical owner of conversation history,
+tools, and execution state. It works with Open WebUI and clients that permit a
+custom OpenAI endpoint, including Conduit on iOS and Android. Official ChatGPT
+and Claude mobile apps do not permit arbitrary compatible endpoints.
 
 The URL fragment contains a bearer-strength pairing secret. Anyone with the
 complete link can control pi and all tools available to the session, so keep it
 private and run `/remote-control stop` when finished.
+
+### Conduit mobile setup
+
+1. Install [Conduit](https://github.com/cogwheel0/conduit).
+2. Choose **Direct connection** and **OpenAI-compatible**.
+3. Enter the base URL, API key, and `pi-session` model shown by pi.
+4. Start a chat. Pi's active local session remains authoritative even though
+   Conduit also keeps a device-local transcript.
+
+Open WebUI can use the same values as an OpenAI-compatible connection.
 
 ## Layout
 
