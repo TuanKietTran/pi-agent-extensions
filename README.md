@@ -71,12 +71,12 @@ the foreground app's Touch Bar controls while presented. No tap or expanded view
 is needed. Each window shows its label, usage percentage, and a progress track;
 orange `!` marks cached/unavailable data, and red marks usage at 90% or higher.
 These are current quota gauges, not historical trend charts. Refresh is every
-15 seconds and on wake, with a cache-aware refresh on context switches. This is
-polling, not a real-time API stream; upstream accounting may lag. Charts restore
-after application, Space, and same-app window switches, with a delayed retry for
-apps that replace their controls late. A 500ms check uses window IDs and owner
-PIDs (no window titles, screenshots, or Accessibility permission). The Control
-Strip's Usage button can restore them manually. Presentation uses private macOS APIs.
+15 seconds and on wake. This is polling, not a real-time API stream; upstream
+accounting may lag. Charts use a compact 340pt layout and a presentation mode
+that reserves the right Control Strip. Close the charts with the system close
+button; app, window, Space switches and wake never reopen them. Tap the Control
+Strip's `π` button to reopen. Charts are presented once when the host starts.
+Presentation uses private macOS APIs.
 The figures are account-wide, not per-window; Codex follows pi's login even if the
 standalone Codex CLI is signed into a different account.
 

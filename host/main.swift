@@ -59,7 +59,7 @@ private enum UsageReader {
 // Fixed-width, left-aligned cards with a visible track even at zero usage.
 private final class QuotaChart: NSView {
     var quotas: [Quota] = [] { didSet { needsDisplay = true } }
-    override var intrinsicContentSize: NSSize { NSSize(width: 480, height: 30) }
+    override var intrinsicContentSize: NSSize { NSSize(width: 340, height: 30) }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.black.setFill()
         bounds.fill()
@@ -68,15 +68,19 @@ private final class QuotaChart: NSView {
             drawText("Usage loading…", at: NSPoint(x: 8, y: 9), color: .secondaryLabelColor)
             return
         }
-        let width = min(154, (bounds.width - 8) / CGFloat(visible.count))
+        let width = min(110, max(0, bounds.width - 8) / CGFloat(visible.count))
         for (index, quota) in visible.enumerated() {
             let x = 6 + CGFloat(index) * width
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: NSRect(x: x, y: 0, width: max(0, width - 6), height: bounds.height)).addClip()
             let value = quota.percent.map { "\(Int($0.rounded()))%" } ?? "—"
             let color: NSColor = quota.stale ? .systemOrange :
                 ((quota.percent ?? 0) >= 90 ? .systemRed : .systemGreen)
-            drawText("\(quota.label)  \(value)\(quota.stale ? " !" : "")",
-                     at: NSPoint(x: x, y: 14), color: quota.stale ? .systemOrange : .white)
-            let track = NSRect(x: x, y: 4, width: width - 14, height: 5)
+            // Separate the label and value into rows instead of one wide title.
+            drawText(quota.label, at: NSPoint(x: x, y: 17), color: .lightGray)
+            drawText("\(value)\(quota.stale ? " !" : "")",
+                     at: NSPoint(x: x, y: 5), color: color)
+            let track = NSRect(x: x + 39, y: 8, width: max(0, width - 49), height: 4)
             NSColor.darkGray.setFill()
             NSBezierPath(roundedRect: track, xRadius: 2.5, yRadius: 2.5).fill()
             if let percent = quota.percent, percent.isFinite, percent > 0 {
@@ -86,11 +90,12 @@ private final class QuotaChart: NSView {
                 color.setFill()
                 NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
             }
+            NSGraphicsContext.restoreGraphicsState()
         }
     }
     private func drawText(_ text: String, at point: NSPoint, color: NSColor) {
         (text as NSString).draw(at: point, withAttributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium),
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
             .foregroundColor: color,
         ])
     }
@@ -102,14 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     private var trayItem: NSCustomTouchBarItem?
     private var timer: Timer?
     private var refreshing = false
-    private var presentationWork: DispatchWorkItem?
-    private var presentationRetry: DispatchWorkItem?
-    private var contextTimer: Timer?
-    private var windowContext = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tray = NSCustomTouchBarItem(identifier: itemIdentifier)
-        tray.view = NSButton(title: "Usage", target: self, action: #selector(showCharts))
+        tray.view = NSButton(title: "π", target: self, action: #selector(showCharts))
         trayItem = tray
         let cls = NSTouchBarItem.self as AnyObject
         let add = NSSelectorFromString("addSystemTrayItem:")
@@ -128,89 +129,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.refresh(force: false)
         }
-        // Window IDs and owner PIDs require no Accessibility permission or titles.
-        contextTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.checkWindowContext()
-        }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.showCharts()
+            // Updating data must never undo a user's dismissal.
             self?.refresh(force: true)
         }
-        // Foreground applications replace the app-controls region on activation.
-        // Re-present after their own Touch Bar has settled.
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            guard application?.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
-            self?.schedulePresentation()
-        }
-        NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.schedulePresentation() }
+        // Do not seize the app-controls region on app, window, or Space changes.
+        // After dismissal the tray button is the only way to reopen this bar.
         refresh(force: false)
-    }
-
-    private func checkWindowContext() {
-        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-              pid != ProcessInfo.processInfo.processIdentifier else { return }
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let front = windows.first {
-            ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) &&
-            ($0[kCGWindowLayer as String] as? Int) == 0
-        }
-        let context = "\(pid):\((front?[kCGWindowNumber as String] as? Int) ?? 0)"
-        guard context != windowContext else { return }
-        windowContext = context
-        schedulePresentation()
-    }
-
-    private func schedulePresentation() {
-        presentationWork?.cancel()
-        presentationRetry?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.restoreCharts()
-            self?.refresh(force: false)
-        }
-        // Some apps install controls asynchronously after activation.
-        let retry = DispatchWorkItem { [weak self] in self?.restoreCharts() }
-        presentationWork = work
-        presentationRetry = retry
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: retry)
-    }
-
-    private func restoreCharts() {
-        guard let usageBar else { return }
-        let cls = NSTouchBar.self as AnyObject
-        let dismiss = NSSelectorFromString("dismissSystemModalTouchBar:")
-        if cls.responds(to: dismiss) { _ = cls.perform(dismiss, with: usageBar) }
-        showCharts()
     }
 
     func touchBar(_ touchBar: NSTouchBar, makeItemForIdentifier identifier: NSTouchBarItem.Identifier) -> NSTouchBarItem? {
         guard identifier == chartIdentifier else { return nil }
         let item = NSCustomTouchBarItem(identifier: identifier)
+        chart.translatesAutoresizingMaskIntoConstraints = false
         item.view = chart
+        // A preferred compact width can yield on narrower Touch Bar layouts.
+        let preferredWidth = chart.widthAnchor.constraint(equalToConstant: 340)
+        preferredWidth.priority = .defaultHigh
+        preferredWidth.isActive = true
+        chart.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
+        chart.heightAnchor.constraint(equalToConstant: 30).isActive = true
         return item
     }
 
     @objc private func showCharts() {
         guard let usageBar else { return }
-        let present = NSSelectorFromString("presentSystemModalTouchBar:placement:systemTrayItemIdentifier:")
-        guard let method = class_getClassMethod(NSTouchBar.self, present) else {
+        let cls = NSTouchBar.self as AnyObject
+        // The no-placement variant reserves the system Control Strip region.
+        // Explicit placement 1 is the full-width / hidden-Control-Strip mode,
+        // not a left alignment setting; it can collide with right-side controls.
+        let present = NSSelectorFromString("presentSystemModalTouchBar:systemTrayItemIdentifier:")
+        guard cls.responds(to: present) else {
             fail("left-side Touch Bar presentation unavailable")
             return
         }
-        symbol("DFRSystemModalShowsCloseBoxWhenFrontMost", as: BoolFn.self)?(false)
+        symbol("DFRSystemModalShowsCloseBoxWhenFrontMost", as: BoolFn.self)?(true)
         symbol("DFRElementSetControlStripPresenceForIdentifier", as: PresenceFn.self)?(
             itemIdentifier.rawValue as NSString, true)
-        typealias PresentFn = @convention(c) (AnyObject, Selector, NSTouchBar, Int, NSString) -> Void
-        let invoke = unsafeBitCast(method_getImplementation(method), to: PresentFn.self)
-        invoke(NSTouchBar.self, present, usageBar, 1, itemIdentifier.rawValue as NSString)
-        // No per-activation logging: this is a persistent, frequently presented UI.
+        _ = cls.perform(present, with: usageBar, with: itemIdentifier.rawValue as NSString)
+        refresh(force: false)
     }
 
     private func refresh(force: Bool) {
