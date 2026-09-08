@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     private var timer: Timer?
     private var refreshing = false
     private var presentationWork: DispatchWorkItem?
+    private var presentationRetry: DispatchWorkItem?
+    private var contextTimer: Timer?
+    private var windowContext = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tray = NSCustomTouchBarItem(identifier: itemIdentifier)
@@ -122,8 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             self?.showCharts()
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.refresh(force: false)
+        }
+        // Window IDs and owner PIDs require no Accessibility permission or titles.
+        contextTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.checkWindowContext()
         }
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -146,11 +153,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         refresh(force: false)
     }
 
+    private func checkWindowContext() {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              pid != ProcessInfo.processInfo.processIdentifier else { return }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let front = windows.first {
+            ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) &&
+            ($0[kCGWindowLayer as String] as? Int) == 0
+        }
+        let context = "\(pid):\((front?[kCGWindowNumber as String] as? Int) ?? 0)"
+        guard context != windowContext else { return }
+        windowContext = context
+        schedulePresentation()
+    }
+
     private func schedulePresentation() {
         presentationWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.showCharts() }
+        presentationRetry?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.restoreCharts()
+            self?.refresh(force: false)
+        }
+        // Some apps install controls asynchronously after activation.
+        let retry = DispatchWorkItem { [weak self] in self?.restoreCharts() }
         presentationWork = work
+        presentationRetry = retry
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: retry)
+    }
+
+    private func restoreCharts() {
+        guard let usageBar else { return }
+        let cls = NSTouchBar.self as AnyObject
+        let dismiss = NSSelectorFromString("dismissSystemModalTouchBar:")
+        if cls.responds(to: dismiss) { _ = cls.perform(dismiss, with: usageBar) }
+        showCharts()
     }
 
     func touchBar(_ touchBar: NSTouchBar, makeItemForIdentifier identifier: NSTouchBarItem.Identifier) -> NSTouchBarItem? {

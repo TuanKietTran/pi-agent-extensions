@@ -20,7 +20,7 @@ CC 5h 74% wk 6% ⟳29m  ·  CX mo 0% ⟳30d
 
 | Path | Role |
 |---|---|
-| `index.ts` | pi extension — polls every 60s, `/touchbar-usage` command |
+| `index.ts` | pi extension — polls every 15s, `/touchbar-usage` command |
 | `src/usage.mjs` | standalone core — fetch, parse, publish. No deps, no pi imports |
 | `bin/pi-usagebar` | Touch Bar host entrypoint, prints one line |
 | `host/main.swift` | native Control Strip app — no BTT/MTMR needed |
@@ -34,7 +34,7 @@ never talks to pi — so **the strip keeps updating with pi closed.**
 | Service | Endpoint | Auth |
 |---|---|---|
 | Claude | `GET api.anthropic.com/api/oauth/usage` | keychain `Claude Code-credentials` → `claudeAiOauth.accessToken`, plus `anthropic-beta: oauth-2025-04-20` |
-| Codex | `GET chatgpt.com/backend-api/wham/usage` | `~/.codex/auth.json` → `tokens.access_token` + `chatgpt-account-id` |
+| Codex | `GET chatgpt.com/backend-api/wham/usage` | pi's `~/.pi/agent/auth.json` → `openai-codex` OAuth access + account ID; falls back to `~/.codex/auth.json` only when pi has no OAuth login |
 
 Note the Codex path is `/wham/usage`. `/backend-api/codex/usage` also exists
 but serves an HTML holding page, which is why the core treats a JSON parse
@@ -71,9 +71,14 @@ the foreground app's Touch Bar controls while presented. No tap or expanded view
 is needed. Each window shows its label, usage percentage, and a progress track;
 orange `!` marks cached/unavailable data, and red marks usage at 90% or higher.
 These are current quota gauges, not historical trend charts. Refresh is every
-60 seconds and on wake. Charts re-present after application and Space switches.
-The Control Strip's Usage button can restore them manually. Presentation uses
-private macOS APIs.
+15 seconds and on wake, with a cache-aware refresh on context switches. This is
+polling, not a real-time API stream; upstream accounting may lag. Charts restore
+after application, Space, and same-app window switches, with a delayed retry for
+apps that replace their controls late. A 500ms check uses window IDs and owner
+PIDs (no window titles, screenshots, or Accessibility permission). The Control
+Strip's Usage button can restore them manually. Presentation uses private macOS APIs.
+The figures are account-wide, not per-window; Codex follows pi's login even if the
+standalone Codex CLI is signed into a different account.
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/dev.handlerone.usagebar   # restart after a rebuild
@@ -110,9 +115,9 @@ Touch Bar → `+` → **Shell Script / Task Widget**
 
 ## Concurrency
 
-Every pi session polls, but only one process per minute does network work:
+Every pi session polls, but normally only one process per 15-second interval does network work:
 
-- 60s freshness floor, checked against the published file's `updatedAt`
+- 15s freshness floor, checked against the published file's `updatedAt`
 - atomic `mkdir` lease so exactly one process fetches
 - lease reclaimed on TTL **or** dead-PID (`kill(pid, 0)`), so a tmux pane
   killed mid-fetch does not wedge the others for 90 seconds
@@ -124,7 +129,7 @@ Every pi session polls, but only one process per minute does network work:
 
 ```sh
 bin/pi-usagebar --json     # full published state
-bin/pi-usagebar --force    # bypass the 60s floor
+bin/pi-usagebar --force    # bypass the 15s floor
 ```
 
 Error suffixes: `!auth` (token expired — run the CLI once to refresh),

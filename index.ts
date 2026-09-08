@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 // rebuilt but globalThis is not. Parking the timer here keeps one poller per
 // process instead of one per session reload.
 const STATE_KEY = Symbol.for("pi.touchbar-usage.state.v1");
-const TICK_MS = 60_000;
+const TICK_MS = 15_000;
 
 type Core = typeof import("./src/usage.mjs");
 

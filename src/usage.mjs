@@ -36,7 +36,7 @@ export const JSON_PATH = path.join(STATE_DIR, "usage-touchbar.json");
 export const TEXT_PATH = path.join(STATE_DIR, "usage-touchbar.txt");
 const LEASE_DIR = path.join(STATE_DIR, "usage-touchbar.lease");
 
-const MIN_INTERVAL_MS = 60_000;   // freshness floor: never hit the APIs faster
+const MIN_INTERVAL_MS = 15_000;   // freshness floor: never hit the APIs faster
 const LEASE_TTL_MS = 90_000;      // lease older than this is presumed abandoned
 const LEASE_WAIT_MS = 3_000;      // cold start: wait for the lease winner to publish
 const LEASE_POLL_MS = 100;
@@ -338,6 +338,11 @@ function codexCredits(payload) {
 }
 
 function codexAuth() {
+  // Match the account used by pi, rather than an unrelated Codex CLI login.
+  const piAuth = readJsonFile(path.join(HOME, ".pi", "agent", "auth.json"))?.["openai-codex"];
+  if (piAuth?.type === "oauth" && piAuth.access) {
+    return { token: piAuth.access, accountId: piAuth.accountId ?? null };
+  }
   const blob = readJsonFile(path.join(HOME, ".codex", "auth.json"));
   const tokens = blob?.tokens ?? blob;
   const token = tokens?.access_token ?? tokens?.accessToken;
