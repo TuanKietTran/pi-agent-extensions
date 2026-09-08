@@ -1,3 +1,6 @@
 [submodule "touchbar-usage"]
 	path = touchbar-usage
 	url = https://github.com/TuanKietTran/pi-touchbar-usage.git
+[submodule "claude-cli"]
+	path = claude-cli
+	url = https://github.com/TuanKietTran/pi-extension-claude-cli.git
