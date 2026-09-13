@@ -146,7 +146,9 @@ function streamClaudeCLI(
       const read = createJsonLineReader((event: any) => {
         if (event.type === "result") {
           if (event.total_cost_usd != null) output.usage.cost.total = event.total_cost_usd;
-          if (event.subtype === "error") failure = new Error(event.error ?? "claude CLI error");
+          if (event.is_error || event.subtype === "error") {
+            failure = new Error(event.error ?? event.result ?? "claude CLI error");
+          }
           return;
         }
         if (event.type !== "stream_event") return;
