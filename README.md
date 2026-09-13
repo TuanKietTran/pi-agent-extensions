@@ -26,8 +26,9 @@ CC 5h 74% wk 6% ⟳29m  ·  CX mo 0% ⟳30d
 | `host/main.swift` | native Control Strip app — no BTT/MTMR needed |
 | `host/build.sh` | builds `~/Applications/UsageBar.app` (CLT only, no Xcode) |
 
-Both the extension and the Touch Bar host call the same core, and the host
-never talks to pi — so **the strip keeps updating with pi closed.**
+Both the extension and the Touch Bar host call the same core. The native app
+bundles a copy of the core at build time and never talks to pi, so **the strip
+keeps updating with pi closed.** Rebuild the app after updating this extension.
 
 ## Endpoints
 

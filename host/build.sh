@@ -7,7 +7,7 @@ DIR=$(cd "$(dirname "$0")" && pwd)
 APP="$HOME/Applications/UsageBar.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Resources/src"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -32,6 +32,10 @@ swiftc -O -target arm64-apple-macos11 \
   -framework AppKit \
   -o "$APP/Contents/MacOS/UsageBar" \
   "$DIR/main.swift"
+
+cp "$DIR/../bin/pi-usagebar" "$APP/Contents/Resources/bin/pi-usagebar"
+cp "$DIR/../src/usage.mjs" "$APP/Contents/Resources/src/usage.mjs"
+chmod +x "$APP/Contents/Resources/bin/pi-usagebar"
 
 codesign --force --sign - "$APP" 2>/dev/null || true
 echo "built $APP"

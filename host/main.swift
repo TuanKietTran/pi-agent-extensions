@@ -24,8 +24,8 @@ private enum UsageReader {
     static func read(force: Bool) -> [Quota]? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        let script = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".pi/agent/extensions/touchbar-usage/bin/pi-usagebar").path
+        guard let script = Bundle.main.resourceURL?
+            .appendingPathComponent("bin/pi-usagebar").path else { return nil }
         task.arguments = [script, "--json"] + (force ? ["--force"] : [])
         let pipe = Pipe()
         task.standardOutput = pipe

@@ -14,7 +14,8 @@ set -u
 HOME_DIR=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
 [ -n "${HOME_DIR:-}" ] || HOME_DIR="${HOME:-}"
 
-CORE="$HOME_DIR/.pi/agent/extensions/touchbar-usage/src/usage.mjs"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CORE="$SCRIPT_DIR/../src/usage.mjs"
 CACHE="$HOME_DIR/.pi/usage-touchbar.txt"
 
 find_node() {
