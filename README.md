@@ -18,7 +18,7 @@ extension system in `exts/`.
 | `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
-| `claude-dispatch/` | Routes a pi session to the `claude-cli` provider. Disable per-run with `--no-claude-dispatch`. |
+| `claude-dispatch/` | Retained for a future merge, but disabled in the aggregate package. Use the standalone `claude-cli` provider directly. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 
 The three single-file extensions exist because of one shared root cause: pi's
