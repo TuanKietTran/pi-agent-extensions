@@ -13,7 +13,8 @@ extension system in `exts/`.
 | Extension | What it does |
 |---|---|
 | `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with persistent left-side progress charts on the macOS Touch Bar. See its README for native host setup. |
-| `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. |
+| `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
+| `odysseus-bridge/` | Git submodule: exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
 | `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
@@ -99,6 +100,22 @@ private and run `/remote-control stop` when finished.
 
 Open WebUI can use the same values as an OpenAI-compatible connection.
 
+## Installation
+
+Install the aggregate package once instead of installing `claude-cli` or the
+other component repositories separately:
+
+```sh
+pi install git:github.com/TuanKietTran/pi-agent-extensions
+```
+
+The package manifest loads the extensions in this repository and its
+submodules. Initialize submodules after a manual clone:
+
+```sh
+git submodule update --init --recursive
+```
+
 ## Layout
 
 Each extension is either a single `.ts` file or a directory with `index.ts`.
@@ -111,12 +128,6 @@ pi loads them from trusted locations only:
 | `.pi/extensions/*.ts` | project-local, after the project is trusted |
 
 ## Working on these
-
-Initialize extension submodules after cloning or pulling:
-
-```sh
-git submodule update --init --recursive
-```
 
 Extensions in auto-discovered locations hot-reload with `/reload` inside pi. Use
 `pi -e ./path.ts` only for one-off tests — it bypasses discovery and cannot be

@@ -1,0 +1,20 @@
+{
+  "name": "pi-agent-extensions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TuanKietTran's bundled extensions for the Pi coding agent",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./answer-floor.ts",
+      "./context-guard.ts",
+      "./thinking-control.ts",
+      "./remote-control.ts",
+      "./claude-dispatch/index.ts",
+      "./claude-cli/index.ts",
+      "./odysseus-bridge/extensions/pi-odysseus-bridge.ts",
+      "./touchbar-usage/index.ts"
+    ]
+  }
+}
