@@ -16,6 +16,7 @@ private func symbol<T>(_ name: String, as type: T.Type) -> T? {
 private struct Quota {
     let label: String
     let percent: Double?
+    let resetsAt: TimeInterval?
     let stale: Bool
 }
 
@@ -38,18 +39,20 @@ private enum UsageReader {
         var quotas: [Quota] = []
         for (key, label) in [("claude", "CC"), ("codex", "CX")] {
             guard let side = root[key] as? [String: Any] else {
-                quotas.append(Quota(label: label, percent: nil, stale: true))
+                quotas.append(Quota(label: label, percent: nil, resetsAt: nil, stale: true))
                 continue
             }
             let age = Date().timeIntervalSince1970 - ((side["at"] as? Double) ?? 0) / 1000
             let stale = (side["ok"] as? Bool) != true || age > 900
             let windows = side["windows"] as? [[String: Any]] ?? []
             if windows.isEmpty {
-                quotas.append(Quota(label: label, percent: nil, stale: true))
+                quotas.append(Quota(label: label, percent: nil, resetsAt: nil, stale: true))
             }
             for window in windows {
+                let resetsAt = (window["resetsAt"] as? NSNumber).map { $0.doubleValue / 1000 }
                 quotas.append(Quota(label: "\(label) \((window["label"] as? String) ?? "?")",
-                                    percent: window["percent"] as? Double, stale: stale))
+                                    percent: (window["percent"] as? NSNumber)?.doubleValue,
+                                    resetsAt: resetsAt, stale: stale))
             }
         }
         return quotas
@@ -76,8 +79,13 @@ private final class QuotaChart: NSView {
             let value = quota.percent.map { "\(Int($0.rounded()))%" } ?? "—"
             let color: NSColor = quota.stale ? .systemOrange :
                 ((quota.percent ?? 0) >= 90 ? .systemRed : .systemGreen)
-            // Separate the label and value into rows instead of one wide title.
+            // Put the reset countdown on every card rather than showing only
+            // the earliest reset for the provider.
             drawText(quota.label, at: NSPoint(x: x, y: 17), color: .lightGray)
+            if let reset = resetText(quota.resetsAt) {
+                drawTextRight("↻\(reset)", rightEdge: x + width - 7, y: 17,
+                              color: .secondaryLabelColor)
+            }
             drawText("\(value)\(quota.stale ? " !" : "")",
                      at: NSPoint(x: x, y: 5), color: color)
             let track = NSRect(x: x + 39, y: 8, width: max(0, width - 49), height: 4)
@@ -93,11 +101,35 @@ private final class QuotaChart: NSView {
             NSGraphicsContext.restoreGraphicsState()
         }
     }
+    private let textAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+    ]
+
+    private func resetText(_ epochSeconds: TimeInterval?) -> String? {
+        guard let epochSeconds else { return nil }
+        let seconds = epochSeconds - Date().timeIntervalSince1970
+        guard seconds > 0 else { return "now" }
+        let minutes = max(1, Int(ceil(seconds / 60)))
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 {
+            let remainder = minutes % 60
+            return remainder == 0 ? "\(hours)h" : "\(hours)h\(remainder)m"
+        }
+        return "\(Int(ceil(Double(hours) / 24)))d"
+    }
+
     private func drawText(_ text: String, at point: NSPoint, color: NSColor) {
-        (text as NSString).draw(at: point, withAttributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: color,
-        ])
+        var attributes = textAttributes
+        attributes[.foregroundColor] = color
+        (text as NSString).draw(at: point, withAttributes: attributes)
+    }
+
+    private func drawTextRight(_ text: String, rightEdge: CGFloat, y: CGFloat, color: NSColor) {
+        var attributes = textAttributes
+        attributes[.foregroundColor] = color
+        let width = (text as NSString).size(withAttributes: attributes).width
+        (text as NSString).draw(at: NSPoint(x: rightEdge - width, y: y), withAttributes: attributes)
     }
 }
 

@@ -68,8 +68,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.handlerone.usagebar.
 the whole UI. The host automatically presents left-aligned quota progress charts
 in the app-controls area, leaving the right Control Strip available. This replaces
 the foreground app's Touch Bar controls while presented. No tap or expanded view
-is needed. Each window shows its label, usage percentage, and a progress track;
-orange `!` marks cached/unavailable data, and red marks usage at 90% or higher.
+is needed. Each window shows its label, usage percentage, reset countdown, and a progress
+track; orange `!` marks cached/unavailable data, and red marks usage at 90% or
+higher.
 These are current quota gauges, not historical trend charts. Refresh is every
 15 seconds and on wake. This is polling, not a real-time API stream; upstream
 accounting may lag. Charts use a compact 340pt layout and a presentation mode
