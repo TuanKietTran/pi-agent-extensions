@@ -15,15 +15,42 @@ extension system in `exts/`.
 | `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with persistent left-side progress charts on the macOS Touch Bar. See its README for native host setup. |
 | `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
 | `odysseus-bridge/` | Git submodule: exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
+| `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
+| `web-ui-vision/` | Git submodule: visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |
+| `cloud-admin/` | Git submodule: session-scoped Cloudflare and Tailscale administration. |
+| `context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, GPT-5.5, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
 | `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
+| `usage-roundrobin.ts` | Spreads turns across models so no 5h usage window runs dry. Reads the same `~/.pi/usage-touchbar.json` the Touch Bar strip renders, charges each turn's tokens by the model's price index, projects each window forward with an observed drain velocity, and picks the model with the lowest charge-per-unit-of-predicted-headroom. Switches only once the current model has burned a quantum, so the prompt cache survives. `/roundrobin [status\|on\|off\|now\|models\|set\|reset]`. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `claude-dispatch/` | Retained for a future merge, but disabled in the aggregate package. Use the standalone `claude-cli` provider directly. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 
-The three single-file extensions exist because of one shared root cause: pi's
+The context-control single-file extensions exist because of one shared root cause: pi's
 context accounting assumes a large hosted model, and every default it picks is
 wrong in a way that fails *silently* against a local llama.cpp server.
+
+`context-optimize.ts` intercepts `session_before_compact`, so it covers the real
+built-in `/compact` command and automatic/overflow compaction rather than merely
+adding an alias. Each run starts at the next available tier—Claude Haiku 4.5,
+GPT-5.5, then a local provider whose id starts with `llamacpp`, `mlx`, `ollama`,
+`lmstudio`, or `local`. Missing tiers are skipped. Empty, truncated, usage-limit,
+API, network, and broken-stream failures rotate immediately to the next tier;
+if every cheap tier fails, compaction is cancelled instead of silently billing
+the active high-cost conversation model. The active conversation model is never
+changed. Compaction uses an eight-word system prompt and computes request
+headroom per candidate before calling it:
+
+```text
+summary output = min(8192, model.maxTokens,
+                     contextWindow - estimatedInput - 4096)
+```
+
+Input is conservatively estimated at three characters per token plus 512 tokens
+of provider-wrapper overhead. Candidates with less than 1024 output tokens left
+are rotated out instead of truncating the transcript and creating a lossy
+checkpoint. This lets a small Apple Silicon local model participate whenever the
+whole compaction request actually fits its window.
 
 ### The arithmetic they defend
 
