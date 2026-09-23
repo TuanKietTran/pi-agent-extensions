@@ -1,9 +1,10 @@
 # pi-agent-extensions
 
 Global extensions for the [pi coding agent](https://github.com/earendil-works/pi)
-(`@earendil-works/pi-coding-agent`), consumed as a git submodule at
-`~/.pi/agent/extensions/`, which is where pi auto-discovers `*.ts` and
-`*/index.ts`.
+(`@earendil-works/pi-coding-agent`). The canonical editable checkout lives at
+`~/Downloads/pi-agent-extensions` and Pi loads it as a local package through
+`~/.pi/agent/settings.json`. Keeping source checkouts in Downloads avoids editing
+Pi's managed `~/.pi/agent/git` cache, which package updates may reset.
 
 Not to be confused with `D:\projects\pi`, a separate CLI with its own unrelated
 extension system in `exts/`.
@@ -130,17 +131,26 @@ Open WebUI can use the same values as an OpenAI-compatible connection.
 
 ## Installation
 
-Install the aggregate package once instead of installing `claude-cli` or the
-other component repositories separately:
+Keep the editable aggregate checkout in Downloads and install it by local path:
 
 ```sh
-pi install git:github.com/TuanKietTran/pi-agent-extensions
+git clone --recurse-submodules https://github.com/TuanKietTran/pi-agent-extensions ~/Downloads/pi-agent-extensions
+pi install ~/Downloads/pi-agent-extensions
 ```
 
-The package manifest loads the extensions in this repository and its
-submodules. Initialize submodules after a manual clone:
+The active user settings entry is equivalent to:
+
+```json
+{ "packages": ["../../Downloads/pi-agent-extensions"] }
+```
+
+Relative local package paths in `~/.pi/agent/settings.json` resolve from
+`~/.pi/agent`. The package manifest loads the extensions in this repository and
+its submodules without copying them into Pi's managed cache. After a non-recursive
+clone, initialize the submodules with:
 
 ```sh
+cd ~/Downloads/pi-agent-extensions
 git submodule update --init --recursive
 ```
 
