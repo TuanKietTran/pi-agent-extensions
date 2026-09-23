@@ -34,6 +34,8 @@ const HOME = (() => {
 
 const STATE_PATH = path.join(HOME, ".pi", "usage-roundrobin.json");
 const SETTINGS_PATH = path.join(HOME, ".pi", "agent", "settings.json");
+const AUTO_PROVIDER = "auto-rotate";
+const AUTO_MODEL = "auto-rotate";
 const WINDOW_MS = 5 * 60 * 60 * 1000;
 const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
 const MIN_VELOCITY_SAMPLE_MS = 90_000;
@@ -247,7 +249,7 @@ function matches(pattern: string, model: Model<any>): boolean {
 }
 
 function candidates(ctx: ExtensionContext, config: Config, unavailableProviders = new Set<string>()): Model<any>[] {
-  const available = ctx.modelRegistry.getAvailable();
+  const available = ctx.modelRegistry.getAvailable().filter((model) => model.provider !== AUTO_PROVIDER);
   const patterns = config.models.length
     ? config.models
     : ctx.scopedModels.length
@@ -483,6 +485,24 @@ function updateStatus(ctx: ExtensionContext, state: PersistedState, decision: De
 // ------------------------------------------------------------------ extension
 
 export default function usageRoundRobin(pi: ExtensionAPI) {
+  // A synthetic picker entry: selecting it immediately resolves to a real model,
+  // so its placeholder endpoint is never used for a provider request.
+  pi.registerProvider(AUTO_PROVIDER, {
+    name: "Auto Rotate",
+    baseUrl: "http://127.0.0.1:1/v1",
+    api: "openai-completions",
+    apiKey: "not-used",
+    models: [{
+      id: AUTO_MODEL,
+      name: "Auto Rotate",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    }],
+  });
+
   // Distinguishes our own setModel() from the user reaching for /model.
   let applying = false;
   let failingOver = false;
@@ -531,7 +551,9 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
         // An explicit scope controls normal rotation. During an outage, availability
         // is more useful than refusing the turn, but input compatibility is mandatory.
         models = ctx.modelRegistry.getAvailable().filter((model) =>
-          !unavailable.has(model.provider) && supportsCurrentInput(model, ctx.model!),
+          model.provider !== AUTO_PROVIDER
+          && !unavailable.has(model.provider)
+          && supportsCurrentInput(model, ctx.model!),
         );
       }
     }
@@ -577,13 +599,17 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     // Pi has already restored the session/default model at this point. Adopt it
     // as the active slot before scheduling; otherwise a stale ledger quantum can
     // immediately replace the user's last pick during /reload or a new session.
+    const auto = ctx.model?.provider === AUTO_PROVIDER;
     if (ctx.model) {
       mutate((draft) => {
-        draft.current = keyOf(ctx.model!);
+        draft.config.enabled = auto || draft.config.enabled;
+        draft.current = auto ? null : keyOf(ctx.model!);
         draft.chargedSinceSwitch = 0;
       });
     }
-    await reschedule(ctx);
+    // In Auto Rotate mode, escape the configured pool if necessary rather than
+    // ever allowing the synthetic picker model to reach a provider request.
+    await reschedule(ctx, auto, auto);
   });
 
   // Decide before the run starts: this is the only point where a switch is both
@@ -614,17 +640,34 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     updateStatus(ctx, state, lastDecision);
   });
 
-  // A manual /model pick is an instruction, not noise: make it the next startup
-  // default, adopt it as the current slot, and give it a full quantum. Automatic
-  // round-robin and failover switches keep `applying` set and cannot steal the default.
-  pi.on("model_select", (event, ctx) => {
+  // The model picker doubles as the mode picker. "Auto Rotate" enables managed
+  // selection; choosing any real model disables it and leaves that model fixed.
+  // Internal rotation/failover keeps `applying` set and cannot alter the mode/default.
+  pi.on("model_select", async (event, ctx) => {
     if (applying || event.source === "restore") return;
+    const auto = event.model.provider === AUTO_PROVIDER && event.model.id === AUTO_MODEL;
     persistDefaultModel(event.model);
     const state = mutate((draft) => {
-      draft.current = keyOf(event.model);
+      draft.config.enabled = auto;
+      draft.current = auto ? null : keyOf(event.model);
       draft.chargedSinceSwitch = 0;
     });
     updateStatus(ctx, state, lastDecision);
+
+    if (auto) {
+      const decision = await reschedule(ctx, true, true);
+      if (!decision?.chosen && event.previousModel?.provider !== AUTO_PROVIDER) {
+        applying = true;
+        try {
+          if (event.previousModel) await pi.setModel(event.previousModel);
+        } finally {
+          applying = false;
+        }
+      }
+      if (ctx.hasUI) ctx.ui.notify("Auto Rotate enabled", decision?.chosen ? "info" : "warning");
+    } else if (ctx.hasUI) {
+      ctx.ui.notify(`Auto Rotate disabled; fixed on ${keyOf(event.model)}`, "info");
+    }
   });
 
   async function failOver(provider: string, ctx: ExtensionContext, retryAfterMs?: number): Promise<void> {
