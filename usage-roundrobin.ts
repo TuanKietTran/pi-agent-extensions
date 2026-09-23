@@ -574,6 +574,15 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // Pi has already restored the session/default model at this point. Adopt it
+    // as the active slot before scheduling; otherwise a stale ledger quantum can
+    // immediately replace the user's last pick during /reload or a new session.
+    if (ctx.model) {
+      mutate((draft) => {
+        draft.current = keyOf(ctx.model!);
+        draft.chargedSinceSwitch = 0;
+      });
+    }
     await reschedule(ctx);
   });
 
