@@ -33,7 +33,9 @@ const HOME = (() => {
 })();
 
 const STATE_PATH = path.join(HOME, ".pi", "usage-roundrobin.json");
+const SETTINGS_PATH = path.join(HOME, ".pi", "agent", "settings.json");
 const WINDOW_MS = 5 * 60 * 60 * 1000;
+const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
 const MIN_VELOCITY_SAMPLE_MS = 90_000;
 const VELOCITY_ALPHA = 0.35;
 /** Blended agent-loop mix: most input is cache reads, output is the scarce part. */
@@ -125,6 +127,20 @@ function writeState(state: PersistedState): void {
   } catch {
     // Losing the ledger degrades fairness, never correctness: the next pick
     // still respects the live window percentages.
+  }
+}
+
+/** Manual model picks become the next startup default; automatic RR switches do not. */
+function persistDefaultModel(model: Model<any>): void {
+  try {
+    const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+    settings.defaultProvider = model.provider;
+    settings.defaultModel = model.id;
+    const tmp = `${SETTINGS_PATH}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(tmp, SETTINGS_PATH);
+  } catch {
+    // A read-only or malformed settings file must not prevent model selection.
   }
 }
 
@@ -230,7 +246,7 @@ function matches(pattern: string, model: Model<any>): boolean {
   return regex.test(keyOf(model)) || regex.test(model.id);
 }
 
-function candidates(ctx: ExtensionContext, config: Config): Model<any>[] {
+function candidates(ctx: ExtensionContext, config: Config, unavailableProviders = new Set<string>()): Model<any>[] {
   const available = ctx.modelRegistry.getAvailable();
   const patterns = config.models.length
     ? config.models
@@ -241,12 +257,24 @@ function candidates(ctx: ExtensionContext, config: Config): Model<any>[] {
   const picked: Model<any>[] = [];
   for (const pattern of patterns) {
     for (const model of available) {
-      if (!matches(pattern, model)) continue;
+      if (unavailableProviders.has(model.provider) || !matches(pattern, model)) continue;
       if (picked.some((other) => keyOf(other) === keyOf(model))) continue;
       picked.push(model);
     }
   }
   return picked;
+}
+
+function supportsCurrentInput(candidate: Model<any>, current: Model<any>): boolean {
+  return current.input.every((input) => candidate.input.includes(input));
+}
+
+function parseRetryAfter(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
 }
 
 // ------------------------------------------------------------ window health
@@ -457,7 +485,19 @@ function updateStatus(ctx: ExtensionContext, state: PersistedState, decision: De
 export default function usageRoundRobin(pi: ExtensionAPI) {
   // Distinguishes our own setModel() from the user reaching for /model.
   let applying = false;
+  let failingOver = false;
+  let lastFailedProvider: string | undefined;
   let lastDecision: Decision | null = null;
+  const unavailableUntil = new Map<string, number>();
+
+  function unavailableProviders(now = Date.now()): Set<string> {
+    const unavailable = new Set<string>();
+    for (const [provider, until] of unavailableUntil) {
+      if (until > now) unavailable.add(provider);
+      else unavailableUntil.delete(provider);
+    }
+    return unavailable;
+  }
 
   /** Clear the per-window ledgers once the window they describe has rolled over. */
   function rollWindow(state: PersistedState, published: Published | null, now: number): void {
@@ -477,13 +517,24 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     state.epoch = epoch;
   }
 
-  async function reschedule(ctx: ExtensionContext, force = false): Promise<Decision | null> {
+  async function reschedule(ctx: ExtensionContext, force = false, failover = false): Promise<Decision | null> {
     const config = readState().config;
-    if (!config.enabled) return null;
+    if (!config.enabled && !failover) return null;
 
     const published = await currentUsage();
     const now = Date.now();
-    const models = candidates(ctx, config);
+    const unavailable = unavailableProviders(now);
+    let models = candidates(ctx, config, unavailable);
+    if (failover && ctx.model) {
+      models = models.filter((model) => supportsCurrentInput(model, ctx.model!));
+      if (!models.length) {
+        // An explicit scope controls normal rotation. During an outage, availability
+        // is more useful than refusing the turn, but input compatibility is mandatory.
+        models = ctx.modelRegistry.getAvailable().filter((model) =>
+          !unavailable.has(model.provider) && supportsCurrentInput(model, ctx.model!),
+        );
+      }
+    }
     if (!models.length) {
       if (ctx.hasUI && force) ctx.ui.notify("usage-roundrobin: no candidate models are available", "warning");
       return null;
@@ -541,7 +592,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     if (!model) return;
     const key = keyOf(model);
     const config = readState().config;
-    const units = priceIndex(model) / Math.max(0.01, cheapestIndex(candidates(ctx, config)));
+    const units = priceIndex(model) / Math.max(0.01, cheapestIndex(candidates(ctx, config, unavailableProviders())));
     const tokens = usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
     const charge = tokens * units;
 
@@ -554,15 +605,54 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     updateStatus(ctx, state, lastDecision);
   });
 
-  // A manual /model pick is an instruction, not noise: adopt it as the current
-  // rotation slot and give it a full quantum before rotating away again.
+  // A manual /model pick is an instruction, not noise: make it the next startup
+  // default, adopt it as the current slot, and give it a full quantum. Automatic
+  // round-robin and failover switches keep `applying` set and cannot steal the default.
   pi.on("model_select", (event, ctx) => {
     if (applying || event.source === "restore") return;
+    persistDefaultModel(event.model);
     const state = mutate((draft) => {
       draft.current = keyOf(event.model);
       draft.chargedSinceSwitch = 0;
     });
     updateStatus(ctx, state, lastDecision);
+  });
+
+  async function failOver(provider: string, ctx: ExtensionContext, retryAfterMs?: number): Promise<void> {
+    if (failingOver || applying) return;
+    failingOver = true;
+    try {
+      unavailableUntil.set(provider, Date.now() + Math.max(PROVIDER_COOLDOWN_MS, retryAfterMs ?? 0));
+      const before = ctx.model ? keyOf(ctx.model) : undefined;
+      await reschedule(ctx, true, true);
+      const after = ctx.model ? keyOf(ctx.model) : undefined;
+      if (after && after !== before) {
+        lastFailedProvider = provider;
+        if (ctx.hasUI) ctx.ui.notify(`Provider ${provider} hit its limit; retrying with ${after}.`, "warning");
+      } else if (ctx.hasUI) {
+        ctx.ui.notify(`Provider ${provider} hit its limit, but no compatible fallback provider is available.`, "error");
+      }
+    } finally {
+      failingOver = false;
+    }
+  }
+
+  pi.on("after_provider_response", async (event, ctx) => {
+    if (event.status !== 429 || !ctx.model) return;
+    await failOver(ctx.model.provider, ctx, parseRetryAfter(event.headers["retry-after"]));
+  });
+
+  pi.on("message_end", async (event, ctx) => {
+    const message = event.message;
+    if (message.role !== "assistant" || message.stopReason !== "error") return;
+    const error = message.errorMessage ?? "";
+    if (!/(?:rate|usage|quota)\s*(?:limit|exceeded)|too many requests|insufficient_quota|resource exhausted|http\s*429/i.test(error)) return;
+    const provider = message.provider || ctx.model?.provider;
+    if (!provider || provider === lastFailedProvider) {
+      lastFailedProvider = undefined;
+      return;
+    }
+    await failOver(provider, ctx);
   });
 
   pi.registerCommand("roundrobin", {
