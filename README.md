@@ -13,7 +13,7 @@ extension system in `exts/`.
 
 | Extension | What it does |
 |---|---|
-| `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with persistent left-side progress charts on the macOS Touch Bar. See its README for native host setup. |
+| `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with Touch Bar charts and a persistent right-panel TUI showing context/quota progress bars plus session input/output tokens. See its README for native host setup. |
 | `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
 | `odysseus-bridge/` | Git submodule: exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
 | `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
@@ -23,9 +23,10 @@ extension system in `exts/`.
 | `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `file-tool-discipline.ts` | Makes GPT models use Pi's auditable `write` tool for new/full files and `edit` for targeted changes. Strengthens the per-turn prompt and blocks obvious shell/heredoc/script-based source-file authoring while allowing normal commands, generated artifacts, logs, and temporary files. |
 | `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
-| `usage-roundrobin.ts` | Spreads turns across models so no 5h usage window runs dry. The model picker includes **Auto Rotate**: choosing it enables managed rotation, while choosing a real model disables rotation and keeps that model fixed; either choice becomes the next startup default. Reads the same `~/.pi/usage-touchbar.json` the Touch Bar strip renders, charges each turn's tokens by the model's price index, projects each window forward with an observed drain velocity, and picks the model with the lowest charge-per-unit-of-predicted-headroom. HTTP 429 and quota-limit failures cool down the exhausted provider and let Pi's existing retry continue on another compatible provider. Switches only once the current model has burned a quantum, so the prompt cache survives. `/roundrobin [status\|on\|off\|now\|models\|set\|reset]`. |
+| `usage-roundrobin.ts` | Spreads turns across available models/providers so no 5h usage window runs dry. The model picker includes **Auto Rotate**: choosing it enables managed rotation, while choosing a real model disables rotation and keeps that model fixed; either choice becomes the next startup default. With no explicit `/roundrobin models` list or scoped models, the pool includes every available model; `/roundrobin models <provider/model ...>` restricts it. Claude CLI counts against the Claude subscription window, not a pay-as-you-go budget. Reads `~/.pi/usage-touchbar.json`, charges each turn's tokens by a relative price index, projects each window forward with observed drain velocity, and picks the lowest charge-per-unit-of-predicted-headroom. In auto mode, HTTP 429 and quota-limit failures cool down the exhausted provider and retry on another compatible provider in the configured pool. Switches only once the current model has burned a quantum, so the prompt cache survives. `/roundrobin [status\|on\|off\|now\|models\|set\|reset]`. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
+| `tui/` | Owns the responsive fullscreen layout and `/right-panel` collapse command: tools at the panel top, `aboveEditor` widgets in its middle, and `belowEditor` widgets plus statuses/footer at the bottom. Run `npm run install:tui` after Pi upgrades. |
 
 The context-control single-file extensions exist because of one shared root cause: pi's
 context accounting assumes a large hosted model, and every default it picks is
@@ -135,6 +136,7 @@ Keep the editable aggregate checkout in Downloads and install it by local path:
 ```sh
 git clone --recurse-submodules https://github.com/TuanKietTran/pi-agent-extensions ~/Downloads/pi-agent-extensions
 pi install ~/Downloads/pi-agent-extensions
+cd ~/Downloads/pi-agent-extensions && npm run install:tui
 ```
 
 The active user settings entry is equivalent to:

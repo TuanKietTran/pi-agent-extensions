@@ -51,21 +51,11 @@ const DEFAULT_CONFIG = {
   hardCap: 0.9,
   /** Dollar budget per 5h window for API-key (non-subscription) models. */
   paygBudgetUsd: 5,
-  /** provider/id patterns; `*` allowed. Empty means "use scoped models, else the built-in list". */
+  /** provider/id patterns; `*` allowed. Empty means "use scoped models, else all available models". */
   models: [] as string[],
 };
 
 type Config = typeof DEFAULT_CONFIG;
-
-/** Used only when nothing is configured and the session has no scoped models. */
-const FALLBACK_PATTERNS = [
-  "*/claude-opus-5",
-  "*/claude-sonnet-5",
-  "*/claude-haiku-4-5",
-  "*/gpt-5.6-sol",
-  "*/gpt-5.6-terra",
-  "*/gpt-5.5",
-];
 
 interface VelocitySample {
   percent: number;
@@ -74,6 +64,7 @@ interface VelocitySample {
 }
 
 interface PersistedState {
+  ledgerVersion: number;
   config: Config;
   /** Reset time the counters belong to; counters clear when it passes. */
   epoch: number | null;
@@ -90,6 +81,7 @@ interface PersistedState {
 }
 
 const EMPTY_STATE: PersistedState = {
+  ledgerVersion: 2,
   config: { ...DEFAULT_CONFIG },
   epoch: null,
   charged: {},
@@ -105,13 +97,16 @@ const EMPTY_STATE: PersistedState = {
 function readState(): PersistedState {
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_PATH, "utf8")) as Partial<PersistedState>;
+    const legacy = raw.ledgerVersion !== EMPTY_STATE.ledgerVersion;
     return {
       ...EMPTY_STATE,
       ...raw,
+      ledgerVersion: EMPTY_STATE.ledgerVersion,
       config: { ...DEFAULT_CONFIG, ...(raw.config ?? {}) },
-      charged: raw.charged ?? {},
-      tokens: raw.tokens ?? {},
-      spendUsd: raw.spendUsd ?? {},
+      charged: legacy ? {} : (raw.charged ?? {}),
+      tokens: legacy ? {} : (raw.tokens ?? {}),
+      spendUsd: legacy ? {} : (raw.spendUsd ?? {}),
+      chargedSinceSwitch: legacy ? 0 : (raw.chargedSinceSwitch ?? 0),
       samples: raw.samples ?? {},
     };
   } catch {
@@ -216,9 +211,11 @@ type PoolId = "claude" | "codex" | "payg";
 const keyOf = (model: Model<any>) => `${model.provider}/${model.id}`;
 
 function poolOf(model: Model<any>, ctx: ExtensionContext): PoolId {
-  // Only an OAuth login spends a subscription window. The same model id behind
-  // an API key spends dollars instead, and must not be rationed against a
-  // window it does not touch.
+  // The Claude CLI uses a placeholder API key in Pi, but actually spends the
+  // authenticated Claude Code subscription window, not a pay-as-you-go budget.
+  if (model.provider === "claude-cli") return "claude";
+  // For other providers, only OAuth spends a subscription window. The same
+  // model behind an API key spends dollars instead.
   let oauth = false;
   try {
     oauth = ctx.modelRegistry.isUsingOAuth(model);
@@ -238,8 +235,16 @@ function priceIndex(model: Model<any>): number {
     (cost.input ?? 0) * PRICE_MIX.input +
     (cost.cacheRead ?? 0) * PRICE_MIX.cacheRead +
     (cost.output ?? 0) * PRICE_MIX.output;
-  // A local/free model would otherwise divide by zero and absorb every turn.
-  return index > 0 ? index : 0.01;
+  if (index > 0) return index;
+  // Claude CLI reports zero prices because Pi does not bill for its tokens.
+  // Use relative Anthropic prices for quota accounting instead of treating
+  // every Claude model as nearly free (which starves all other providers).
+  if (model.provider === "claude-cli") {
+    const tier = /haiku/i.test(model.id) ? 1 : /sonnet/i.test(model.id) ? 3 : 5;
+    return tier * PRICE_MIX.input + tier * 0.1 * PRICE_MIX.cacheRead + tier * 5 * PRICE_MIX.output;
+  }
+  // A genuinely free local model must not divide by zero.
+  return 0.01;
 }
 
 function matches(pattern: string, model: Model<any>): boolean {
@@ -249,22 +254,17 @@ function matches(pattern: string, model: Model<any>): boolean {
 }
 
 function candidates(ctx: ExtensionContext, config: Config, unavailableProviders = new Set<string>()): Model<any>[] {
-  const available = ctx.modelRegistry.getAvailable().filter((model) => model.provider !== AUTO_PROVIDER);
+  const available = ctx.modelRegistry.getAvailable().filter((model) =>
+    model.provider !== AUTO_PROVIDER && !unavailableProviders.has(model.provider),
+  );
   const patterns = config.models.length
     ? config.models
     : ctx.scopedModels.length
       ? ctx.scopedModels.map((entry) => keyOf(entry.model))
-      : FALLBACK_PATTERNS;
-
-  const picked: Model<any>[] = [];
-  for (const pattern of patterns) {
-    for (const model of available) {
-      if (unavailableProviders.has(model.provider) || !matches(pattern, model)) continue;
-      if (picked.some((other) => keyOf(other) === keyOf(model))) continue;
-      picked.push(model);
-    }
-  }
-  return picked;
+      : null;
+  return patterns
+    ? available.filter((model) => patterns.some((pattern) => matches(pattern, model)))
+    : available;
 }
 
 function supportsCurrentInput(candidate: Model<any>, current: Model<any>): boolean {
@@ -404,7 +404,10 @@ function score(
 
 /** Cheapest price index decides the unit of "one quota unit". */
 function cheapestIndex(models: Model<any>[]): number {
-  return models.reduce((min, model) => Math.min(min, priceIndex(model)), Number.POSITIVE_INFINITY);
+  // Free local models must not make hosted charges hundreds of times larger.
+  const hosted = models.filter((model) => priceIndex(model) > 0.01);
+  const pool = hosted.length ? hosted : models;
+  return pool.reduce((min, model) => Math.min(min, priceIndex(model)), Number.POSITIVE_INFINITY);
 }
 
 // ---------------------------------------------------------------- selection
@@ -539,37 +542,27 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
 
   async function reschedule(ctx: ExtensionContext, force = false, failover = false): Promise<Decision | null> {
     const config = readState().config;
-    if (!config.enabled && !failover) return null;
+    if (!config.enabled) return null;
 
     const published = await currentUsage();
     const now = Date.now();
     const unavailable = unavailableProviders(now);
     let models = candidates(ctx, config, unavailable);
-    if (failover && ctx.model) {
+    if (failover && ctx.model && ctx.model.provider !== AUTO_PROVIDER) {
+      // A failure must not escape an explicitly selected rotation pool.
       models = models.filter((model) => supportsCurrentInput(model, ctx.model!));
-      if (!models.length) {
-        // An explicit scope controls normal rotation. During an outage, availability
-        // is more useful than refusing the turn, but input compatibility is mandatory.
-        models = ctx.modelRegistry.getAvailable().filter((model) =>
-          model.provider !== AUTO_PROVIDER
-          && !unavailable.has(model.provider)
-          && supportsCurrentInput(model, ctx.model!),
-        );
-      }
     }
     if (!models.length) {
       if (ctx.hasUI && force) ctx.ui.notify("usage-roundrobin: no candidate models are available", "warning");
       return null;
     }
     let decision: Decision | null = null;
-    const state = mutate((draft) => {
+    mutate((draft) => {
       rollWindow(draft, published, now);
       const scored = models.map((model) => score(draft, published, model, ctx, now));
       decision = decide(draft, scored, draft.current ?? (ctx.model ? keyOf(ctx.model) : null));
-      if (decision.chosen && decision.switched) {
-        draft.current = keyOf(decision.chosen.model);
-        draft.chargedSinceSwitch = 0;
-      }
+      // Commit only after setModel succeeds; a failed switch must not hold a
+      // phantom model for the next quantum.
     });
 
     const resolved = decision as Decision | null;
@@ -577,21 +570,29 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
       applying = true;
       try {
         const ok = await pi.setModel(resolved.chosen.model);
-        if (!ok && ctx.hasUI) {
-          ctx.ui.notify(`usage-roundrobin: no credentials for ${keyOf(resolved.chosen.model)}`, "warning");
-        } else if (ok && ctx.hasUI) {
-          ctx.ui.notify(
-            `usage-roundrobin → ${short(resolved.chosen.model)} (${Math.round(resolved.chosen.spare * 100)}% window spare)`,
-            "info",
-          );
+        if (!ok) {
+          if (ctx.hasUI) ctx.ui.notify(`usage-roundrobin: no credentials for ${keyOf(resolved.chosen.model)}`, "warning");
+          return null;
         }
+        if (ctx.hasUI) ctx.ui.notify(
+          `usage-roundrobin → ${short(resolved.chosen.model)} (${Math.round(resolved.chosen.spare * 100)}% window spare)`,
+          "info",
+        );
       } finally {
         applying = false;
       }
     }
 
+    if (resolved?.chosen && ctx.model && keyOf(ctx.model) === keyOf(resolved.chosen.model)) {
+      if (readState().current !== keyOf(resolved.chosen.model)) {
+        mutate((draft) => {
+          draft.current = keyOf(resolved.chosen!.model);
+          draft.chargedSinceSwitch = 0;
+        });
+      }
+    }
     lastDecision = resolved;
-    updateStatus(ctx, state, resolved);
+    updateStatus(ctx, readState(), resolved);
     return resolved;
   }
 
@@ -627,7 +628,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     if (!model) return;
     const key = keyOf(model);
     const config = readState().config;
-    const units = priceIndex(model) / Math.max(0.01, cheapestIndex(candidates(ctx, config, unavailableProviders())));
+    const units = Math.max(1, priceIndex(model) / Math.max(0.01, cheapestIndex(candidates(ctx, config, unavailableProviders()))));
     const tokens = usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
     const charge = tokens * units;
 
@@ -671,7 +672,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
   });
 
   async function failOver(provider: string, ctx: ExtensionContext, retryAfterMs?: number): Promise<void> {
-    if (failingOver || applying) return;
+    if (!readState().config.enabled || failingOver || applying) return;
     failingOver = true;
     try {
       unavailableUntil.set(provider, Date.now() + Math.max(PROVIDER_COOLDOWN_MS, retryAfterMs ?? 0));

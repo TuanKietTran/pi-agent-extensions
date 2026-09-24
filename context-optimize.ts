@@ -1,4 +1,8 @@
 import type { Model } from "@earendil-works/pi-ai";
+import { createServer, type Server } from "node:net";
+import { mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   convertToLlm,
   serializeConversation,
@@ -16,6 +20,9 @@ const PROVIDER_SAFETY_TOKENS = 4096;
 const CHARS_PER_TOKEN = 3;
 const REQUEST_OVERHEAD_TOKENS = 512;
 const ROTATION_KEY = Symbol.for("pi.context-optimize.rotation.v2");
+const CONTROL_DIR = join(homedir(), ".pi");
+const TARGET_PATH = join(CONTROL_DIR, "optimize-target.json");
+const SOCKET_PATH = join(CONTROL_DIR, `optimize-${process.pid}.sock`);
 
 interface RotationState {
   next: number;
@@ -238,5 +245,57 @@ export default function contextOptimize(pi: ExtensionAPI) {
   pi.registerShortcut("ctrl+shift+o", {
     description: "Optimize context with cheap-model failover",
     handler: async (ctx) => optimize(ctx),
+  });
+
+  // The Touch Bar button sends a request over a private Unix socket. No
+  // keyboard event is injected into the foreground application or terminal.
+  let server: Server | undefined;
+  let activeContext: ExtensionContext | undefined;
+  const publishTarget = async () => {
+    if (!server) return;
+    const temporary = `${TARGET_PATH}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify({ pid: process.pid, socket: SOCKET_PATH }), { mode: 0o600 });
+    await rename(temporary, TARGET_PATH);
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    activeContext = ctx;
+    if (server) { await publishTarget(); return; }
+    try {
+      await mkdir(CONTROL_DIR, { recursive: true, mode: 0o700 });
+      await rm(SOCKET_PATH, { force: true });
+      const listening = createServer((client) => {
+        client.setTimeout(2000, () => client.destroy());
+        client.once("data", (data) => {
+          if (data.toString().trim() !== "optimize") { client.end("invalid\n"); return; }
+          if (!activeContext || !activeContext.isIdle()) { client.end("busy\n"); return; }
+          client.end("accepted\n");
+          optimize(activeContext);
+        });
+      });
+      await new Promise<void>((resolve, reject) => {
+        listening.once("error", reject);
+        listening.listen(SOCKET_PATH, () => { listening.off("error", reject); resolve(); });
+      });
+      server = listening;
+      await chmod(SOCKET_PATH, 0o600);
+      await publishTarget();
+      server.unref();
+    } catch (error) {
+      if (ctx.hasUI) ctx.ui.notify(`Touch Bar Optimize IPC unavailable: ${String(error)}`, "warning");
+    }
+  });
+  pi.on("turn_end", async () => { await publishTarget().catch(() => undefined); });
+  pi.on("session_shutdown", async () => {
+    activeContext = undefined;
+    if (server) {
+      const closing = server;
+      server = undefined;
+      await new Promise<void>((resolve) => closing.close(() => resolve()));
+    }
+    await rm(SOCKET_PATH, { force: true });
+    try {
+      const target = JSON.parse(await readFile(TARGET_PATH, "utf8")) as { pid?: number };
+      if (target.pid === process.pid) await rm(TARGET_PATH, { force: true });
+    } catch { /* Another session may already own the target. */ }
   });
 }

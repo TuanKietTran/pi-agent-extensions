@@ -5,11 +5,15 @@
   "description": "TuanKietTran's bundled extensions for the Pi coding agent",
   "keywords": ["pi-package"],
   "license": "MIT",
+  "scripts": {
+    "install:tui": "node ./tui/install-layout.mjs"
+  },
   "dependencies": {
     "playwright-core": "^1.52.0"
   },
   "pi": {
     "extensions": [
+      "./tui/index.ts",
       "./answer-floor.ts",
       "./context-guard.ts",
       "./context-optimize.ts",
