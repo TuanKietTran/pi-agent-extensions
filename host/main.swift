@@ -1,5 +1,6 @@
 // Native Touch Bar quota charts. Uses private macOS Touch Bar presentation APIs.
 import AppKit
+import CoreGraphics
 import ObjectiveC
 
 private let itemIdentifier = NSTouchBarItem.Identifier("dev.handlerone.usagebar.item")
@@ -139,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
     private var trayItem: NSCustomTouchBarItem?
     private var timer: Timer?
     private var refreshing = false
+    private weak var optimizeButton: NSButton?
+    private var optimizing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let tray = NSCustomTouchBarItem(identifier: itemIdentifier)
@@ -176,14 +179,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTouchBarDelegate {
         guard identifier == chartIdentifier else { return nil }
         let item = NSCustomTouchBarItem(identifier: identifier)
         chart.translatesAutoresizingMaskIntoConstraints = false
-        item.view = chart
+        let optimize = NSButton(title: "Optimize", target: self, action: #selector(optimizeContext))
+        optimize.bezelColor = .systemGreen
+        optimize.toolTip = "Ask the selected Pi session to compact over local IPC; never sends keyboard input"
+        optimizeButton = optimize
+        optimize.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView(views: [chart, optimize])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        item.view = stack
         // A preferred compact width can yield on narrower Touch Bar layouts.
         let preferredWidth = chart.widthAnchor.constraint(equalToConstant: 340)
         preferredWidth.priority = .defaultHigh
         preferredWidth.isActive = true
         chart.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
         chart.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        optimize.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        optimize.heightAnchor.constraint(equalToConstant: 28).isActive = true
         return item
+    }
+
+    @objc private func optimizeContext() {
+        guard !optimizing else { return }
+        optimizing = true
+        optimizeButton?.title = "Sending…"
+        // The target is published by Pi itself. This request never focuses a
+        // terminal or synthesizes a keystroke into the user's active app.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let targetURL = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".pi/optimize-target.json")
+            var result = "No Pi"
+            if let data = try? Data(contentsOf: targetURL),
+               let target = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let socket = target["socket"] as? String,
+               socket.hasPrefix(FileManager.default.homeDirectoryForCurrentUser.path + "/.pi/optimize-"),
+               socket.hasSuffix(".sock") {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/nc")
+                task.arguments = ["-U", socket]
+                let input = Pipe(), output = Pipe()
+                task.standardInput = input
+                task.standardOutput = output
+                task.standardError = FileHandle.nullDevice
+                do {
+                    try task.run()
+                    input.fileHandleForWriting.write(Data("optimize\n".utf8))
+                    try? input.fileHandleForWriting.close()
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+                        if task.isRunning { task.terminate() }
+                    }
+                    let response = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    task.waitUntilExit()
+                    result = response == "accepted" ? "Sent" : response == "busy" ? "Pi busy" : "No Pi"
+                } catch { result = "No Pi" }
+            }
+            DispatchQueue.main.async {
+                self?.optimizeButton?.title = result
+                self?.optimizing = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                    self?.optimizeButton?.title = "Optimize"
+                }
+            }
+        }
     }
 
     @objc private func showCharts() {

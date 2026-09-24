@@ -26,9 +26,13 @@ CC 5h 74% wk 6% ⟳29m  ·  CX mo 0% ⟳30d
 | `host/main.swift` | native Control Strip app — no BTT/MTMR needed |
 | `host/build.sh` | builds `~/Applications/UsageBar.app` (CLT only, no Xcode) |
 
-Both the extension and the Touch Bar host call the same core. The native app
-bundles a copy of the core at build time and never talks to pi, so **the strip
-keeps updating with pi closed.** Rebuild the app after updating this extension.
+Both the extension and the Touch Bar host call the same core. In Pi, the extension
+mounts a persistent `aboveEditor` widget; the aggregate package's standard TUI
+layout places that widget in the right-panel middle. It shows context and each
+Claude/Codex window as a progress bar, plus cumulative session input/output
+tokens. The native app bundles a copy of the core at build time and never talks
+to pi, so **the strip keeps updating with pi closed.** Rebuild the app after
+updating this extension.
 
 ## Endpoints
 
@@ -71,7 +75,13 @@ in the app-controls area, leaving the right Control Strip available. This replac
 the foreground app's Touch Bar controls while presented. No tap or expanded view
 is needed. Each window shows its label, usage percentage, reset countdown, and a progress
 track; orange `!` marks cached/unavailable data, and red marks usage at 90% or
-higher.
+higher. The adjacent **Optimize** button sends a local Unix-socket request to
+Pi's most recently active session (no global shortcut, app activation, or keyboard
+input). The bundled `context-optimize.ts` extension compacts that idle Pi session
+into a concise implementation-state summary. Compaction rotates across available
+Claude Haiku 4.5, GPT-5.5, and local llama.cpp/MLX tiers, immediately failing over
+on usage limits, broken streams, API failures, or network errors. It does nothing
+if Pi is not running or the agent is working; the button briefly reports **No Pi** or **Pi busy** instead.
 These are current quota gauges, not historical trend charts. Refresh is every
 15 seconds and on wake. This is polling, not a real-time API stream; upstream
 accounting may lag. Charts use a compact 340pt layout and a presentation mode
@@ -84,6 +94,7 @@ standalone Codex CLI is signed into a different account.
 
 ```sh
 launchctl kickstart -k gui/$(id -u)/dev.handlerone.usagebar   # restart after a rebuild
+# Run /reload in each Pi session to load the new local Optimize IPC listener
 launchctl bootout gui/$(id -u)/dev.handlerone.usagebar        # stop + disable
 cat /tmp/usagebar.err.log                                     # only written on failure
 ```
