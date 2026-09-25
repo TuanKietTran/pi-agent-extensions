@@ -27,6 +27,7 @@ extension system in `exts/`.
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 | `tui/` | Owns the responsive fullscreen layout and `/right-panel` collapse command: tools at the panel top, `aboveEditor` widgets in its middle, and `belowEditor` widgets plus statuses/footer at the bottom. Run `npm run install:tui` after Pi upgrades. |
+| `todo/` | Persistent human-ordered todo queue in the right panel. The agent adds discovered work through the `todo` tool and auto-continues with the next open item. Use `/todo` or Ctrl-Shift-T to reorder/status/delete interactively; `/todo add <text>`, `/todo move <id> <position>`, and `/todo auto on\|off` work directly. |
 
 The context-control single-file extensions exist because of one shared root cause: pi's
 context accounting assumes a large hosted model, and every default it picks is
