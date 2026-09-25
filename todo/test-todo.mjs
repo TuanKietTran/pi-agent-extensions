@@ -196,4 +196,26 @@ await test("state persists in the session branch and restores on resume/tree", a
   assert.equal((await b.tool({ action: "list" })).details.todos.length, 2, "tree navigation restores that branch's queue");
 });
 
+await test("fully done queue auto-clears; agent clear drops done items", async () => {
+  const h = host();
+  await h.emit("session_start");
+  await h.tool({ action: "add", items: ["a", "b", "c"] });
+  await h.tool({ action: "done", id: 1 });
+  const res = await h.tool({ action: "clear" });
+  assert.match(res.content[0].text, /Cleared 1 done/);
+  assert.deepEqual(h.order(), [2, 3]);
+  await h.tool({ action: "done", id: 2 });
+  await h.emit("agent_settled");
+  assert.deepEqual(h.order(), [2, 3], "open work is kept");
+  await h.tool({ action: "done", id: 3 });
+  await h.emit("agent_settled");
+  assert.deepEqual(h.order(), []);
+  assert.equal(h.widget, undefined, "panel hides once cleared");
+
+  const r = host([{ type: "custom", customType: "todo-panel-state", data: { todos: [{ id: 1, text: "x", status: "done", source: "agent" }], nextId: 2, autoFeed: true } }]);
+  await r.emit("session_start");
+  const { message } = await r.emit("before_agent_start", { prompt: "x" });
+  assert.match(message.content, /\(empty\)/, "restored all-done queue clears before the next prompt");
+});
+
 console.log(`\n${passed} passed`);

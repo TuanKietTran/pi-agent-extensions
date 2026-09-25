@@ -30,7 +30,7 @@ const MAX_VISIBLE_TODOS = 14;
 const MAX_AUTO_CONTINUATIONS = 20;
 
 const TodoParams = Type.Object({
-  action: StringEnum(["list", "add", "start", "done", "reopen", "remove"] as const),
+  action: StringEnum(["list", "add", "start", "done", "reopen", "remove", "clear"] as const),
   id: Type.Optional(Type.Number({ description: "Todo ID for start, done, reopen, or remove" })),
   text: Type.Optional(Type.String({ description: "Todo text for add" })),
   items: Type.Optional(Type.Array(Type.String(), { description: "Several todo texts to add in order" })),
@@ -172,6 +172,13 @@ export default function todoPanel(pi: ExtensionAPI): void {
     publish(ctx);
   }
 
+  // A fully completed queue is stale context for the next request; drop it.
+  function clearIfAllDone(ctx: ExtensionContext): void {
+    if (state.todos.length === 0 || state.todos.some((todo) => todo.status !== "done")) return;
+    state.todos = [];
+    saveAndPublish(ctx);
+  }
+
   function restore(ctx: ExtensionContext): void {
     state = { todos: [], nextId: 1, autoFeed: true };
     for (const entry of ctx.sessionManager.getBranch()) {
@@ -217,7 +224,8 @@ export default function todoPanel(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => restore(ctx));
   pi.on("session_tree", async (_event, ctx) => restore(ctx));
 
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (_event, ctx) => {
+    clearIfAllDone(ctx);
     const open = state.todos.filter((todo) => todo.status !== "done");
     const list = state.todos.length === 0
       ? "(empty)"
@@ -234,6 +242,7 @@ The Pi host provides a todo tool and the human-owned ordered queue below.
 - Work on the first unfinished item. Mark it in_progress before work and done immediately after completion.
 - Do not duplicate existing items. Keep simple one-step requests out of the queue.
 - Before ending, update every item whose status changed.
+- Use the clear action to drop done items once they no longer matter as context. A fully done queue clears automatically.
 Auto-feed is ${state.autoFeed ? "enabled" : "disabled"}.
 Current queue (${open.length} open):
 ${list}
@@ -246,9 +255,10 @@ ${list}
     autoContinuations = 0;
   });
 
-  pi.on("agent_settled", async () => {
+  pi.on("agent_settled", async (_event, ctx) => {
     lastAutoTodoId = undefined;
     lastAutoRevision = -1;
+    clearIfAllDone(ctx);
   });
 
   pi.on("agent_before_settle", async (event, ctx) => {
@@ -281,7 +291,7 @@ ${list}
   pi.registerTool({
     name: "todo",
     label: "Todo",
-    description: "Maintain the ordered shared work queue. Add discovered work; start, complete, reopen, remove, or list items. The human alone controls ordering.",
+    description: "Maintain the ordered shared work queue. Add discovered work; start, complete, reopen, remove, or list items; clear drops done items. The human alone controls ordering.",
     parameters: TodoParams,
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -292,6 +302,10 @@ ${list}
         message = `Added ${added.map((todo) => `#${todo.id}`).join(", ")}`;
       } else if (params.action === "list") {
         message = `${state.todos.length} todo(s)`;
+      } else if (params.action === "clear") {
+        const before = state.todos.length;
+        state.todos = state.todos.filter((todo) => todo.status !== "done");
+        message = `Cleared ${before - state.todos.length} done todo(s)`;
       } else {
         if (params.id === undefined) throw new Error(`todo ${params.action} requires id`);
         const index = state.todos.findIndex((todo) => todo.id === params.id);
