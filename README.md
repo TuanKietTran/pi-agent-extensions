@@ -7,7 +7,7 @@ This is the native companion to DOM/CDP-oriented browser tools: it can operate b
 ## Features
 
 - Background input by default: events are posted straight into the browser process, so your frontmost app, physical pointer, and keyboard are never taken over
-- Native mouse move, click, double-click, right-click, drag, and pixel scrolling
+- Native mouse move, background click, foreground `focus_click`, double-click, right-click, drag, and pixel scrolling
 - Native Unicode typing and keyboard shortcuts
 - Focus-free direct-window screenshots, including covered, minimized, other-display, and other-Space windows
 - Persistent, branch-aware mouse trail overlaid on observations
@@ -19,9 +19,11 @@ This is the native companion to DOM/CDP-oriented browser tools: it can operate b
 ## Tools
 
 - `mac_browser_observe` — capture the browser window without activating it and mark the current mouse/trail
-- `mac_browser_act` — move, click, drag, scroll, type, press a key, wait, or reset the trail; input is background-only and cannot activate the browser or use the system-wide event stream
+- `mac_browser_act` — move, click, force focus with `focus_click`, drag, scroll, type, press a key, wait, or reset the trail; all actions are background-only except explicit `focus_click`
+- `mac_browser_surface` — turn native surface input on/off, toggle it, or inspect its state
 - `mac_browser_tabs` — status, open, create, list, select, or close browser tabs
 - `/mac-browser` — status command
+- `/mac-browser surface on|off|toggle|status` — control the same persisted surface-input state
 - `/mac-browser permissions` — trigger macOS permission prompts
 - `/mac-browser reset` — clear the tracked mouse trail
 - `/mac-browser open https://example.com` — open a URL manually
@@ -92,9 +94,9 @@ The trail tracks automation endpoints, not every physical sample. Smooth moves a
 
 This extension drives a browser running under your user account and can operate authenticated pages.
 
-By default `mac_browser_act` runs in **background mode**: each synthetic event is delivered with `CGEvent.postToPid` to the browser process instead of the shared HID tap. Nothing is routed through the system event stream, so the automation cannot land in Pi, your editor, or whatever else you are typing into, and your physical cursor never moves. The browser is not activated, not unminimized, and not brought forward, so automation cannot interrupt you. Because the pointer is virtual, the reported `cursor` and the trail overlay track the synthetic position, not your real mouse.
+Surface input is on by default and can be changed by either `mac_browser_surface` or `/mac-browser surface on|off|toggle|status`; both use the same session-persisted state. When enabled, `mac_browser_act` runs in **background mode**: each synthetic event is delivered with `CGEvent.postToPid` to the browser process instead of the shared HID tap. Nothing is routed through the system event stream, so the automation cannot land in Pi, your editor, or whatever else you are typing into, and your physical cursor never moves. The browser is not activated, not unminimized, and not brought forward, so automation cannot interrupt you. Because the pointer is virtual, the reported `cursor` and the trail overlay track the synthetic position, not your real mouse.
 
-There is no foreground-input option. The extension schema does not expose browser activation, and the Swift helper independently rejects every mouse/keyboard command that lacks a target browser PID. This prevents a model or malformed tool call from falling back to system-wide HID input.
+Foreground input is limited to the explicit `focus_click` action. It activates the browser and performs one system-wide HID click to establish real Chromium element focus, moving the physical pointer and interrupting the frontmost app. Every other mouse/keyboard action still requires a target browser PID, preventing accidental fallback to the shared HID stream.
 
 Chromium may ignore background keyboard input and some clicks when it is not the active application. Native menus, OS-level dialogs, and key-window-only controls are therefore unsupported by design. For searches and navigation, use `mac_browser_tabs` with a complete URL instead of focusing an address/search field. The extension will not work around a rejected background action by activating the browser.
 

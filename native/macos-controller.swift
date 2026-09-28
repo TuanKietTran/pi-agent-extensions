@@ -316,8 +316,11 @@ case "move":
     let target = CGPoint(x: number(2, "x"), y: number(3, "y"))
     moveMouse(from: currentCursor(), to: target, durationMs: integer(4, "durationMs"))
     emit(["cursor": ["x": target.x, "y": target.y]])
-case "click":
+case "click", "foreground-click":
     requireAccessibility()
+    if command == "foreground-click" && targetPID != nil {
+        fail("foreground-click must use the shared HID stream without --pid")
+    }
     let target = CGPoint(x: number(2, "x"), y: number(3, "y"))
     let (button, down, up) = mouseButton(arguments.count > 4 ? arguments[4] : "left")
     let count = max(1, min(3, integer(5, "count")))
@@ -328,7 +331,7 @@ case "click":
         postMouse(up, target, button, clickState: Int64(click))
         if click < count { usleep(70_000) }
     }
-    emit(["cursor": ["x": target.x, "y": target.y]])
+    emit(["cursor": ["x": target.x, "y": target.y], "foreground": command == "foreground-click"])
 case "drag":
     requireAccessibility()
     let start = CGPoint(x: number(2, "x"), y: number(3, "y"))
