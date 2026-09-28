@@ -15,10 +15,7 @@
     "extensions": [
       "./tui/index.ts",
       "./todo/index.ts",
-      "./answer-floor.ts",
-      "./context-guard.ts",
-      "./context-optimize.ts",
-      "./file-tool-discipline.ts",
+      "./gc-assets/index.ts",
       "./thinking-control.ts",
       "./usage-roundrobin.ts",
       "./remote-control.ts",

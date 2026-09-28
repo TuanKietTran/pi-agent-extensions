@@ -30,12 +30,19 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { guardSettings, prompt } from "../md.ts";
+
+// Limits live in guards/contexts.md, the resume prompt in guards/rules.md.
+const cfg = guardSettings<{ floor_tokens: number; safety_tokens: number; max_auto_continues: number }>(
+	"guards/contexts.md",
+	"answer-floor",
+);
 
 /** Enough to finish a reasoning block and the answer that follows it. */
-const FLOOR_TOKENS = 2048;
+const FLOOR_TOKENS = cfg.floor_tokens;
 
 /** pi's hardcoded CONTEXT_SAFETY_TOKENS, mirrored so we can predict the squeeze. */
-const SAFETY_TOKENS = 4096;
+const SAFETY_TOKENS = cfg.safety_tokens;
 
 /** The fields the various provider payloads use for the output cap. */
 const CAP_FIELDS = ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as const;
@@ -45,12 +52,9 @@ const CAP_FIELDS = ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as
  * Three recoveries is enough for a genuinely long answer; past that the cause is
  * something a retry will not fix.
  */
-const MAX_AUTO_CONTINUES = 3;
+const MAX_AUTO_CONTINUES = cfg.max_auto_continues;
 
-const CONTINUE_PROMPT =
-	"Your previous reply was cut off by the output limit, mid-sentence. Continue it from " +
-	"exactly where it stopped. Do not repeat what you already wrote, do not restart, and do " +
-	"not apologise — just carry straight on.";
+const CONTINUE_PROMPT = prompt("guards/rules.md", "continue-prompt");
 
 let consecutiveContinues = 0;
 

@@ -8,12 +8,9 @@
 // remain available.
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { prompt } from "../md.ts";
 
-const FILE_POLICY = `## File mutation policy for GPT models
-- Use Pi's write tool to create new source, configuration, documentation, and test files, or to replace a file completely.
-- Use Pi's edit tool for targeted changes to existing files.
-- Do not author those files through bash/powershell, shell redirection, cat/tee heredocs, sed -i, or Python/Node/Ruby/Perl filesystem APIs.
-- Shell commands may still create compiler/build artifacts, dependency metadata, logs, PID files, and files under temporary directories.`;
+const FILE_POLICY = prompt("guards/rules.md", "file-policy");
 
 function isGpt(ctx: ExtensionContext): boolean {
   const provider = ctx.model?.provider.toLowerCase() ?? "";

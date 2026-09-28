@@ -20,17 +20,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatSize } from "@earendil-works/pi-coding-agent";
+import { guardSettings } from "../md.ts";
 
-/** Share of the context window one tool result may occupy. */
-const RESULT_SHARE = 0.06;
-const CHARS_PER_TOKEN = 4;
-/** Never cap below this — small caps make the model blind. */
-const MIN_BYTES = 4_000;
-/** pi's own ceiling; this extension only ever tightens it. */
-const MAX_BYTES = 50_000;
-const MAX_LINES = 400;
-/** How much of the budget goes to the head; the rest keeps the tail. */
-const HEAD_SHARE = 0.4;
+// Limits live in guards/contexts.md (see there for what each one means).
+const cfg = guardSettings<{
+	result_share: number;
+	chars_per_token: number;
+	min_bytes: number;
+	max_bytes: number;
+	max_lines: number;
+	head_share: number;
+}>("guards/contexts.md", "context-guard");
+const RESULT_SHARE = cfg.result_share;
+const CHARS_PER_TOKEN = cfg.chars_per_token;
+const MIN_BYTES = cfg.min_bytes;
+const MAX_BYTES = cfg.max_bytes;
+const MAX_LINES = cfg.max_lines;
+const HEAD_SHARE = cfg.head_share;
 
 const SPILL_DIR = join(tmpdir(), "pi-context-guard");
 

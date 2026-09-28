@@ -19,21 +19,23 @@ extension system in `exts/`.
 | `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
 | `web-ui-vision/` | Git submodule: visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |
 | `cloud-admin/` | Git submodule: session-scoped Cloudflare and Tailscale administration. |
-| `context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, GPT-5.5, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
-| `context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
-| `file-tool-discipline.ts` | Makes GPT models use Pi's auditable `write` tool for new/full files and `edit` for targeted changes. Strengthens the per-turn prompt and blocks obvious shell/heredoc/script-based source-file authoring while allowing normal commands, generated artifacts, logs, and temporary files. |
-| `answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
+| `core/guards/context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, GPT-5.5, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
+| `core/guards/context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
+| `core/guards/file-tool-discipline.ts` | Makes GPT models use Pi's auditable `write` tool for new/full files and `edit` for targeted changes. Strengthens the per-turn prompt and blocks obvious shell/heredoc/script-based source-file authoring while allowing normal commands, generated artifacts, logs, and temporary files. |
+| `core/guards/answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
 | `usage-roundrobin.ts` | Spreads turns across available models/providers so no 5h usage window runs dry. The model picker includes **Auto Rotate**: choosing it enables managed rotation, while choosing a real model disables rotation and keeps that model fixed; either choice becomes the next startup default. With no explicit `/roundrobin models` list or scoped models, the pool includes every available model; `/roundrobin models <provider/model ...>` restricts it. Claude CLI counts against the Claude subscription window, not a pay-as-you-go budget. Reads `~/.pi/usage-touchbar.json`, charges each turn's tokens by a relative price index, projects each window forward with observed drain velocity, and picks the lowest charge-per-unit-of-predicted-headroom. In auto mode, HTTP 429 and quota-limit failures cool down the exhausted provider and retry on another compatible provider in the configured pool. Switches only once the current model has burned a quantum, so the prompt cache survives. `/roundrobin [status\|on\|off\|now\|models\|set\|reset]`. |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 | `tui/` | Owns the responsive fullscreen layout and `/right-panel` collapse command: tools at the panel top, `aboveEditor` widgets in its middle, and `belowEditor` widgets plus statuses/footer at the bottom. Run `npm run install:tui` after Pi upgrades. |
+| `core/` | Job supervisor (`start_job`, `job_status`, `cancel_job`, `job_logs`) with steered `job_event`s, plus the bundled guards in `core/guards/` (context-guard, answer-floor, context-optimize, file-tool-discipline). Policy loads from `rules.md`, `commands.md`, `contexts.md`; dev replay in `core/dev/`. |
+| `gc-assets/` | Right-panel heap/RSS bars plus a background scan of pi-owned assets (tool-output temp, pi temp, sessions, package cache) with stale-byte counts. `/gc [status\|scan\|heap\|sweep [sessions]\|age <days>\|hide\|show]`: `heap` forces V8 GC; `sweep` deletes files older than the age (default 7d) after confirmation, and only touches sessions when named explicitly. |
 | `todo/` | Persistent human-ordered todo queue in the right panel. The agent adds discovered work through the `todo` tool and auto-continues with the next open item. Use `/todo` or Ctrl-Shift-T to reorder/status/delete interactively; `/todo add <text>`, `/todo move <id> <position>`, and `/todo auto on\|off` work directly. |
 
 The context-control single-file extensions exist because of one shared root cause: pi's
 context accounting assumes a large hosted model, and every default it picks is
 wrong in a way that fails *silently* against a local llama.cpp server.
 
-`context-optimize.ts` intercepts `session_before_compact`, so it covers the real
+`core/guards/context-optimize.ts` intercepts `session_before_compact`, so it covers the real
 built-in `/compact` command and automatic/overflow compaction rather than merely
 adding an alias. Each run starts at the next available tier—Claude Haiku 4.5,
 GPT-5.5, then a local provider whose id starts with `llamacpp`, `mlx`, `ollama`,
@@ -88,7 +90,7 @@ compaction.reserveTokens  ≥  4096 + model.maxTokens
 
 Compaction triggers at `contextWindow − reserveTokens`, so the reserve has to
 cover the hidden safety margin *plus* a full reply. Anything less and compaction
-fires only after the budget has already collapsed. `answer-floor.ts` is the
+fires only after the budget has already collapsed. `core/guards/answer-floor.ts` is the
 backstop for when that rule drifts — a new model, a hand-edited setting.
 
 ## Remote control
