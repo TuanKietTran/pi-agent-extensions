@@ -20,17 +20,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { formatSize } from "@earendil-works/pi-coding-agent";
-import { guardSettings } from "../md.ts";
+import { limits } from "../md.ts";
 
-// Limits live in guards/contexts.md (see there for what each one means).
-const cfg = guardSettings<{
+import { PI_EVENT } from "../events.ts";
+
+// --- Constants: every local literal lives here. ---
+
+const CONTEXTS_FILE = "contexts.md";
+const LIMITS_NAME = "context-guard";
+const SPILL_SUBDIR = "pi-context-guard";
+const ENCODING = "utf8";
+const LINE_BREAK = "\n";
+const BLOCK_TEXT = "text";
+const NOTE_INFO = "info";
+const elision = (omitted: number) => `[… ${omitted} lines elided by context-guard …]`;
+const noticeHead = (kept: number, total: number) => `\n\n[context-guard: kept ${kept} of ${total} lines`;
+const noticeSizes = (kept: string, total: string) => ` (${kept} of ${total}).`;
+const noticePi = (path: string | undefined) => ` Complete untruncated output: ${path}.`;
+const noticeSpilled = (path: string) => ` Output as received: ${path}.`;
+const NOTICE_UNSAVED = ` The trimmed content could not be saved.`;
+const NOTICE_ADVICE =
+	` Do NOT re-run the same broad command — narrow it (head/tail, a subdirectory,` +
+	` --max-depth) or grep the saved file instead.]`;
+const noteTrimmed = (tool: string, size: string) => `context-guard trimmed ${tool} output to ${size}`;
+
+// Limits live in contexts.md (see there for what each one means).
+const cfg = limits<{
 	result_share: number;
 	chars_per_token: number;
 	min_bytes: number;
 	max_bytes: number;
 	max_lines: number;
 	head_share: number;
-}>("guards/contexts.md", "context-guard");
+}>(CONTEXTS_FILE, LIMITS_NAME);
 const RESULT_SHARE = cfg.result_share;
 const CHARS_PER_TOKEN = cfg.chars_per_token;
 const MIN_BYTES = cfg.min_bytes;
@@ -38,7 +60,7 @@ const MAX_BYTES = cfg.max_bytes;
 const MAX_LINES = cfg.max_lines;
 const HEAD_SHARE = cfg.head_share;
 
-const SPILL_DIR = join(tmpdir(), "pi-context-guard");
+const SPILL_DIR = join(tmpdir(), SPILL_SUBDIR);
 
 interface Trim {
 	content: string;
@@ -50,12 +72,12 @@ interface Trim {
 }
 
 function bytes(s: string): number {
-	return Buffer.byteLength(s, "utf8");
+	return Buffer.byteLength(s, ENCODING);
 }
 
 function trimMiddle(text: string, maxBytes: number, maxLines: number): Trim {
 	const totalBytes = bytes(text);
-	const lines = text.split("\n");
+	const lines = text.split(LINE_BREAK);
 	const totalLines = lines.length;
 	if (totalBytes <= maxBytes && totalLines <= maxLines) {
 		return { content: text, truncated: false, keptLines: totalLines, totalLines, keptBytes: totalBytes, totalBytes };
@@ -83,7 +105,7 @@ function trimMiddle(text: string, maxBytes: number, maxLines: number): Trim {
 	}
 
 	const omitted = totalLines - head.length - tail.length;
-	const content = [...head, `[… ${omitted} lines elided by context-guard …]`, ...tail].join("\n");
+	const content = [...head, elision(omitted), ...tail].join(LINE_BREAK);
 	return {
 		content,
 		truncated: true,
@@ -105,7 +127,7 @@ function spill(toolName: string, toolCallId: string, text: string): string | und
 	try {
 		mkdirSync(SPILL_DIR, { recursive: true });
 		const path = join(SPILL_DIR, `${toolName}-${toolCallId}.txt`);
-		writeFileSync(path, text, "utf8");
+		writeFileSync(path, text, ENCODING);
 		return path;
 	} catch {
 		return undefined;
@@ -113,12 +135,12 @@ function spill(toolName: string, toolCallId: string, text: string): string | und
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.on("tool_result", (event, ctx) => {
+	pi.on(PI_EVENT.TOOL_RESULT, (event, ctx) => {
 		const blocks = Array.isArray(event.content) ? event.content : [];
-		const textBlocks = blocks.filter((b: any) => b?.type === "text");
+		const textBlocks = blocks.filter((b: any) => b?.type === BLOCK_TEXT);
 		if (textBlocks.length === 0) return;
 
-		const full = textBlocks.map((b: any) => b.text ?? "").join("\n");
+		const full = textBlocks.map((b: any) => b.text ?? "").join(LINE_BREAK);
 		const trim = trimMiddle(full, budgetFor(ctx), MAX_LINES);
 		if (!trim.truncated) return;
 
@@ -126,24 +148,23 @@ export default function (pi: ExtensionAPI) {
 		// complete output; point at that rather than spilling a second, shorter copy.
 		const piPath = (event.details as { fullOutputPath?: string } | undefined)?.fullOutputPath;
 		const path = piPath ?? spill(event.toolName, event.toolCallId, full);
-		let notice = `\n\n[context-guard: kept ${trim.keptLines} of ${trim.totalLines} lines`;
-		notice += ` (${formatSize(trim.keptBytes)} of ${formatSize(trim.totalBytes)}).`;
+		let notice = noticeHead(trim.keptLines, trim.totalLines);
+		notice += noticeSizes(formatSize(trim.keptBytes), formatSize(trim.totalBytes));
 		if (piPath) {
-			notice += ` Complete untruncated output: ${path}.`;
+			notice += noticePi(path);
 		} else if (path) {
-			notice += ` Output as received: ${path}.`;
+			notice += noticeSpilled(path);
 		} else {
-			notice += ` The trimmed content could not be saved.`;
+			notice += NOTICE_UNSAVED;
 		}
-		notice += ` Do NOT re-run the same broad command — narrow it (head/tail, a subdirectory,`;
-		notice += ` --max-depth) or grep the saved file instead.]`;
+		notice += NOTICE_ADVICE;
 
 		if (ctx.hasUI) {
-			ctx.ui.notify(`context-guard trimmed ${event.toolName} output to ${formatSize(trim.keptBytes)}`, "info");
+			ctx.ui.notify(noteTrimmed(event.toolName, formatSize(trim.keptBytes)), NOTE_INFO);
 		}
 
 		// Keep non-text blocks (images etc.) after the trimmed text.
-		const kept = blocks.filter((b: any) => b?.type !== "text");
-		return { content: [{ type: "text", text: trim.content + notice }, ...kept] };
+		const kept = blocks.filter((b: any) => b?.type !== BLOCK_TEXT);
+		return { content: [{ type: BLOCK_TEXT, text: trim.content + notice }, ...kept] };
 	});
 }

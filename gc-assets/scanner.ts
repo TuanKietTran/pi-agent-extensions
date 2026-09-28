@@ -6,8 +6,19 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // pi reloads extensions in-process on session switch/fork; globalThis survives,
 // so the scan timer and cached results live here to keep one poller per process.
+// --- Constants: every local literal lives here. ---
+
 const STATE_KEY = Symbol.for("pi.gc-assets.state.v1");
 const DAY_MS = 86_400_000;
+const CONFIG_FILE = "config.md";
+const ENCODING = "utf8";
+const JSON_BLOCK = /```json\s*\n([\s\S]*?)```/;
+const TOKEN_TMP = "{tmp}";
+const TOKEN_AGENT = "{agent}";
+const TOKEN_HOME = "{home}";
+const AGENT_SUBDIR = [".pi", "agent"];
+const PREFIX_WILDCARD = "*";
+const SWEEP_NEVER = "never";
 
 export type Sweep = "auto" | "confirm" | "never";
 
@@ -46,8 +57,8 @@ const EMPTY: GcConfig = { tick_ms: 60_000, max_files: 50_000, age_days: 7, categ
 /** All tunables and category roots come from config.md. */
 export function loadConfig(): GcConfig {
   try {
-    const md = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "config.md"), "utf8");
-    const m = md.match(/```json\s*\n([\s\S]*?)```/);
+    const md = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), CONFIG_FILE), ENCODING);
+    const m = md.match(JSON_BLOCK);
     return m ? { ...EMPTY, ...JSON.parse(m[1]) } : EMPTY;
   } catch {
     return EMPTY;
@@ -60,16 +71,16 @@ export function ageDays(cfg: GcConfig = loadConfig()): number {
 
 function resolveToken(spec: string): string {
   return spec
-    .replace("{tmp}", os.tmpdir())
-    .replace("{agent}", path.join(os.homedir(), ".pi", "agent"))
-    .replace("{home}", os.homedir());
+    .replace(TOKEN_TMP, os.tmpdir())
+    .replace(TOKEN_AGENT, path.join(os.homedir(), ...AGENT_SUBDIR))
+    .replace(TOKEN_HOME, os.homedir());
 }
 
 async function expandRoots(def: CategoryDef): Promise<string[]> {
   const out: string[] = [];
   for (const spec of def.roots) {
     const p = resolveToken(spec);
-    if (!p.endsWith("*")) {
+    if (!p.endsWith(PREFIX_WILDCARD)) {
       out.push(p);
       continue;
     }
@@ -124,7 +135,7 @@ export async function scanCategories(cfg: GcConfig, age: number): Promise<Catego
         (file, size, mtimeMs) => {
           category.files++;
           category.bytes += size;
-          if (def.sweep !== "never" && mtimeMs < cutoff) {
+          if (def.sweep !== SWEEP_NEVER && mtimeMs < cutoff) {
             category.staleFiles++;
             category.staleBytes += size;
             category.stale.push(file);

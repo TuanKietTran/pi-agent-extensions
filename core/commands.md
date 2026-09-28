@@ -10,6 +10,8 @@
 ## Slash commands
 
 - `/jobs` — list jobs and states
+- `/core-replay [all|pass|hang|lost|cancel|resume] [live]` — dev: scripted scenarios on an isolated supervisor. Prints the event timeline and PASS/FAIL. `live` also steers events into the session as `[replay] {job_event}`.
+- `/todo [add <text>|move <id> <position>|done <id>|remove <id>|clear-done|auto on|off]` — todo queue; no argument opens the manager (also Ctrl-Shift-T).
 
 ## Job kinds
 

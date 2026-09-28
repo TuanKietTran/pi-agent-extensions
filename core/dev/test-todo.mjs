@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// End-to-end harness: loads todo/index.ts through Pi's own jiti + aliases and
+// End-to-end harness: loads core/todo.ts through Pi's own jiti + aliases and
 // drives it with a fake ExtensionAPI that mirrors the host contracts it uses.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -23,7 +23,7 @@ const jiti = createJiti(import.meta.url, {
     typebox: require.resolve("typebox"),
   },
 });
-const todoPanel = await jiti.import(join(here, "index.ts"), { default: true });
+const todoPanel = await jiti.import(join(here, "..", "todo.ts"), { default: true });
 
 const theme = { fg: (_c, t) => t, bold: (t) => t, strikethrough: (t) => `~${t}~` };
 

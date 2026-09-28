@@ -5,6 +5,40 @@ import { registerReplay } from "./dev/replay.ts";
 import { WIDGET_KEY, formatBytes, publish } from "./panel.ts";
 import { ageDays, loadConfig, scan, state, sweep } from "./scanner.ts";
 
+import { PI_EVENT } from "../core/events.ts";
+
+// --- Constants: every local literal lives here. ---
+
+const EXPOSE_GC_FLAG = "--expose-gc";
+const GC_GLOBAL = "gc";
+const QUIT = "quit";
+const COMMAND_NAME = "gc";
+const COMMAND_DESCRIPTION = "Memory GC and asset cleanup (status|scan|heap|sweep [sessions]|age <days>|hide|show)";
+const ACTION_STATUS = "status";
+const ACTION_SCAN = "scan";
+const ACTION_HEAP = "heap";
+const ACTION_AGE = "age";
+const ACTION_HIDE = "hide";
+const ACTION_SHOW = "show";
+const ACTION_SWEEP = "sweep";
+const ARG_SESSIONS = "sessions";
+const SWEEP_AUTO = "auto";
+const SWEEP_CONFIRM = "confirm";
+const NOTE_INFO = "info";
+const NOTE_WARNING = "warning";
+const NOTE_AGE_USAGE = "Usage: /gc age <days>";
+const NOTE_USAGE = "Usage: /gc [status|scan|heap|sweep [sessions]|age <days>|hide|show]";
+const CONFIRM_TITLE = "Delete stale assets?";
+const NOTHING_HINT = " (sessions excluded; use /gc sweep sessions)";
+const noteAssets = (total: string, age: number, stale: string) => `Assets ${total} · stale >${age}d ${stale}`;
+const noteHeap = (freed: string) => `Heap GC freed ${freed}`;
+const noteNothing = (age: number, includeSessions: boolean) =>
+  `Nothing older than ${age}d to sweep${includeSessions ? "" : NOTHING_HINT}`;
+const targetLine = (label: string, files: number, size: string) => `${label}: ${files} files, ${size}`;
+const confirmBody = (age: number, list: string, files: number, size: string) =>
+  `Older than ${age} days:\n${list}\n\nTotal ${files} files, ${size}. This cannot be undone.`;
+const noteSwept = (files: number, size: string) => `Swept ${files} files, ${size}`;
+
 async function refresh(ctx: ExtensionContext | undefined): Promise<void> {
   try {
     await scan();
@@ -16,11 +50,11 @@ async function refresh(ctx: ExtensionContext | undefined): Promise<void> {
 
 function runGc(): number {
   const before = process.memoryUsage().heapUsed;
-  let gc = (globalThis as { gc?: () => void }).gc;
+  let gc = (globalThis as { gc?: () => void })[GC_GLOBAL];
   if (!gc) {
     try {
-      v8.setFlagsFromString("--expose-gc");
-      gc = vm.runInNewContext("gc") as () => void;
+      v8.setFlagsFromString(EXPOSE_GC_FLAG);
+      gc = vm.runInNewContext(GC_GLOBAL) as () => void;
     } catch {}
   }
   gc?.();
@@ -43,47 +77,47 @@ function stop(): void {
 export default function gcAssets(pi: ExtensionAPI): void {
   registerReplay(pi);
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
     state.ctx = ctx;
     publish(ctx);
     start();
   });
 
-  pi.on("turn_end", async (_event, ctx) => {
+  pi.on(PI_EVENT.TURN_END, async (_event, ctx) => {
     state.ctx = ctx;
     publish(ctx);
   });
 
-  pi.on("session_shutdown", async (event) => {
+  pi.on(PI_EVENT.SESSION_SHUTDOWN, async (event) => {
     state.ctx = undefined;
-    if (event.reason === "quit") stop();
+    if (event.reason === QUIT) stop();
   });
 
-  pi.registerCommand("gc", {
-    description: "Memory GC and asset cleanup (status|scan|heap|sweep [sessions]|age <days>|hide|show)",
+  pi.registerCommand(COMMAND_NAME, {
+    description: COMMAND_DESCRIPTION,
     handler: async (args, ctx) => {
       state.ctx = ctx;
-      const [action = "status", arg] = args.trim().toLowerCase().split(/\s+/);
+      const [action = ACTION_STATUS, arg] = args.trim().toLowerCase().split(/\s+/);
 
-      if (action === "status" || action === "scan") {
+      if (action === ACTION_STATUS || action === ACTION_SCAN) {
         await refresh(ctx);
         const total = state.categories.reduce((sum, c) => sum + c.bytes, 0);
-        ctx.ui.notify(`Assets ${formatBytes(total)} · stale >${ageDays()}d ${formatBytes(state.categories.reduce((sum, c) => sum + c.staleBytes, 0))}`, "info");
+        ctx.ui.notify(noteAssets(formatBytes(total), ageDays(), formatBytes(state.categories.reduce((sum, c) => sum + c.staleBytes, 0))), NOTE_INFO);
         return;
       }
 
-      if (action === "heap") {
+      if (action === ACTION_HEAP) {
         const freed = runGc();
         state.lastGc = { at: Date.now(), freedBytes: freed };
         publish(ctx);
-        ctx.ui.notify(`Heap GC freed ${formatBytes(freed)}`, "info");
+        ctx.ui.notify(noteHeap(formatBytes(freed)), NOTE_INFO);
         return;
       }
 
-      if (action === "age") {
+      if (action === ACTION_AGE) {
         const days = Number(arg);
         if (!Number.isFinite(days) || days < 0) {
-          ctx.ui.notify("Usage: /gc age <days>", "warning");
+          ctx.ui.notify(NOTE_AGE_USAGE, NOTE_WARNING);
           return;
         }
         state.ageDays = days;
@@ -91,38 +125,38 @@ export default function gcAssets(pi: ExtensionAPI): void {
         return;
       }
 
-      if (action === "hide") {
+      if (action === ACTION_HIDE) {
         ctx.ui.setWidget(WIDGET_KEY, undefined);
         return;
       }
 
-      if (action === "show") {
+      if (action === ACTION_SHOW) {
         await refresh(ctx);
         return;
       }
 
-      if (action === "sweep") {
+      if (action === ACTION_SWEEP) {
         await refresh(ctx);
         const age = ageDays();
-        const includeSessions = arg === "sessions";
-        const targets = state.categories.filter((c) => c.staleFiles > 0 && (c.sweep === "auto" || (includeSessions && c.sweep === "confirm")));
+        const includeSessions = arg === ARG_SESSIONS;
+        const targets = state.categories.filter((c) => c.staleFiles > 0 && (c.sweep === SWEEP_AUTO || (includeSessions && c.sweep === SWEEP_CONFIRM)));
         const files = targets.reduce((sum, c) => sum + c.staleFiles, 0);
         const bytes = targets.reduce((sum, c) => sum + c.staleBytes, 0);
         if (files === 0) {
-          ctx.ui.notify(`Nothing older than ${age}d to sweep${includeSessions ? "" : " (sessions excluded; use /gc sweep sessions)"}`, "info");
+          ctx.ui.notify(noteNothing(age, includeSessions), NOTE_INFO);
           return;
         }
-        const list = targets.map((c) => `${c.label}: ${c.staleFiles} files, ${formatBytes(c.staleBytes)}`).join("\n");
-        if (!(await ctx.ui.confirm("Delete stale assets?", `Older than ${age} days:\n${list}\n\nTotal ${files} files, ${formatBytes(bytes)}. This cannot be undone.`))) return;
+        const list = targets.map((c) => targetLine(c.label, c.staleFiles, formatBytes(c.staleBytes))).join("\n");
+        if (!(await ctx.ui.confirm(CONFIRM_TITLE, confirmBody(age, list, files, formatBytes(bytes))))) return;
         const done = await sweep(targets, age);
         state.lastSweep = { at: Date.now(), ...done };
         runGc();
         await refresh(ctx);
-        ctx.ui.notify(`Swept ${done.files} files, ${formatBytes(done.bytes)}`, "info");
+        ctx.ui.notify(noteSwept(done.files, formatBytes(done.bytes)), NOTE_INFO);
         return;
       }
 
-      ctx.ui.notify("Usage: /gc [status|scan|heap|sweep [sessions]|age <days>|hide|show]", "warning");
+      ctx.ui.notify(NOTE_USAGE, NOTE_WARNING);
     },
   });
 }

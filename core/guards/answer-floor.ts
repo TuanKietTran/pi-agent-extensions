@@ -30,12 +30,34 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { guardSettings, prompt } from "../md.ts";
+import { limits, prompt } from "../md.ts";
 
-// Limits live in guards/contexts.md, the resume prompt in guards/rules.md.
-const cfg = guardSettings<{ floor_tokens: number; safety_tokens: number; max_auto_continues: number }>(
-	"guards/contexts.md",
-	"answer-floor",
+import { PI_EVENT } from "../events.ts";
+
+// --- Constants: every local literal lives here. ---
+
+const CONTEXTS_FILE = "contexts.md";
+const RULES_FILE = "rules.md";
+const LIMITS_NAME = "answer-floor";
+const CONTINUE_HEADING = "continue-prompt";
+const ROLE_ASSISTANT = "assistant";
+const STOP_LENGTH = "length";
+const DELIVER_FOLLOW_UP = "followUp";
+const NOTE_INFO = "info";
+const NOTE_ERROR = "error";
+const NOTE_CONTINUING = "Reply hit the output cap — continuing it.";
+const noteGaveUp = (max: number) =>
+	`Reply hit the output cap ${max} times in a row; not resuming again. ` +
+	`Widen the model's context window or lower what you are asking for in one go.`;
+const noteSqueezed = (available: number, wanted: number) =>
+	`Reply was cut off: only ${Math.max(0, available)} of ${wanted} output ` +
+	`tokens were left. Compacting, then continuing.`;
+const noteCompactFailed = (message: string) => `Compaction failed (${message}); continuing anyway.`;
+
+// Limits live in contexts.md, the resume prompt in rules.md.
+const cfg = limits<{ floor_tokens: number; safety_tokens: number; max_auto_continues: number }>(
+	CONTEXTS_FILE,
+	LIMITS_NAME,
 );
 
 /** Enough to finish a reasoning block and the answer that follows it. */
@@ -54,7 +76,7 @@ const CAP_FIELDS = ["max_tokens", "max_completion_tokens", "maxOutputTokens"] as
  */
 const MAX_AUTO_CONTINUES = cfg.max_auto_continues;
 
-const CONTINUE_PROMPT = prompt("guards/rules.md", "continue-prompt");
+const CONTINUE_PROMPT = prompt(RULES_FILE, CONTINUE_HEADING);
 
 let consecutiveContinues = 0;
 
@@ -72,7 +94,7 @@ function budgetAhead(ctx: ExtensionContext): { available: number; wanted: number
 }
 
 export default function (pi: ExtensionAPI) {
-	pi.on("before_provider_request", (event, ctx) => {
+	pi.on(PI_EVENT.BEFORE_PROVIDER_REQUEST, (event, ctx) => {
 		const payload = event.payload as Record<string, unknown> | undefined;
 		if (!payload) return;
 
@@ -90,11 +112,11 @@ export default function (pi: ExtensionAPI) {
 		return patched;
 	});
 
-	pi.on("message_end", (event, ctx) => {
+	pi.on(PI_EVENT.MESSAGE_END, (event, ctx) => {
 		const message = event.message as { role?: string; stopReason?: string } | undefined;
-		if (message?.role !== "assistant") return;
+		if (message?.role !== ROLE_ASSISTANT) return;
 
-		if (message.stopReason !== "length") {
+		if (message.stopReason !== STOP_LENGTH) {
 			consecutiveContinues = 0;
 			return;
 		}
@@ -102,40 +124,32 @@ export default function (pi: ExtensionAPI) {
 		if (consecutiveContinues >= MAX_AUTO_CONTINUES) {
 			consecutiveContinues = 0;
 			if (ctx.hasUI) {
-				ctx.ui.notify(
-					`Reply hit the output cap ${MAX_AUTO_CONTINUES} times in a row; not resuming again. ` +
-						`Widen the model's context window or lower what you are asking for in one go.`,
-					"error",
-				);
+				ctx.ui.notify(noteGaveUp(MAX_AUTO_CONTINUES), NOTE_ERROR);
 			}
 			return;
 		}
 		consecutiveContinues++;
 
-		const resume = () => pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: "followUp" });
+		const resume = () => pi.sendUserMessage(CONTINUE_PROMPT, { deliverAs: DELIVER_FOLLOW_UP });
 
 		// Squeezed budget or simply a long answer? Only the first needs compaction,
 		// and compacting a nearly-empty context would throw away history for nothing.
 		const budget = budgetAhead(ctx);
 		if (!budget || budget.available >= budget.wanted) {
-			if (ctx.hasUI) ctx.ui.notify("Reply hit the output cap — continuing it.", "info");
+			if (ctx.hasUI) ctx.ui.notify(NOTE_CONTINUING, NOTE_INFO);
 			resume();
 			return;
 		}
 
 		if (ctx.hasUI) {
-			ctx.ui.notify(
-				`Reply was cut off: only ${Math.max(0, budget.available)} of ${budget.wanted} output ` +
-					`tokens were left. Compacting, then continuing.`,
-				"info",
-			);
+			ctx.ui.notify(noteSqueezed(budget.available, budget.wanted), NOTE_INFO);
 		}
 		ctx.compact({
 			onComplete: resume,
 			onError: (error: Error) => {
 				// Compaction failing is not fatal here — the reply is still worth
 				// finishing on whatever budget remains.
-				if (ctx.hasUI) ctx.ui.notify(`Compaction failed (${error.message}); continuing anyway.`, "error");
+				if (ctx.hasUI) ctx.ui.notify(noteCompactFailed(error.message), NOTE_ERROR);
 				resume();
 			},
 		});

@@ -54,8 +54,48 @@ interface LiveJob {
 	terminal: boolean;
 }
 
+// --- Constants: every local literal lives here. ---
+
 const RING_MAX = 500;
-const TERMINAL: JobState[] = ["completed", "failed", "timed_out", "lost", "cancelled"];
+const MAX_TAIL = 200;
+const LAST_LINE_MAX = 200;
+const KILL_GRACE_MS = 3000;
+const SLA_STEP = "sla";
+const SHELL = "/bin/sh";
+const SHELL_FLAG = "-c";
+const ENCODING = "utf8";
+const LINE_BREAK = "\n";
+const SIGNAL_PROBE = 0;
+const SIGTERM = "SIGTERM";
+const SIGKILL = "SIGKILL";
+const EVENT_TYPE = "job_event";
+const CLASS_IDEMPOTENT = "idempotent";
+const CLASS_REVERSIBLE = "reversible";
+const CLASS_IRREVERSIBLE = "irreversible";
+const QUEUED = "queued";
+const RUNNING = "running";
+const COMPLETED = "completed";
+const FAILED = "failed";
+const TIMED_OUT = "timed_out";
+const LOST = "lost";
+const CANCELLED = "cancelled";
+const TERMINAL: JobState[] = [COMPLETED, FAILED, TIMED_OUT, LOST, CANCELLED];
+
+// Messages
+const NOTE_RESUMED_ALIVE = "resumed: process still alive but unattached";
+const NOTE_RESUMED_GONE = "resumed: process gone";
+const NOTE_HEARTBEAT = "heartbeat missed";
+const RESULT_CANCELLED = "cancelled";
+const unknownKind = (kind: string, known: string[]) => `Unknown kind '${kind}'. Known: ${known.join(", ")}`;
+const irreversibleDisabled = (kind: string) =>
+	`Kind '${kind}' is irreversible and disabled. Ask the user to confirm and set PI_JOBS_ALLOW_IRREVERSIBLE=1.`;
+const unknownJob = (id: string) => `Unknown job ${id}`;
+const notCancelable = (id: string) => `Job ${id} is not cancelable`;
+const alreadyState = (state: JobState) => `already ${state}`;
+const spawnError = (message: string) => `spawn error: ${message}`;
+const killedBySignal = (sig: string) => `killed by signal ${sig}`;
+const exitCode = (code: number | null) => `exit ${code}`;
+const hostLine = (note: string) => `[host] ${note}`;
 
 export interface SupervisorHooks {
 	/** Called once per state change worth telling the model about. */
@@ -98,75 +138,67 @@ export class Supervisor {
 				let alive = false;
 				if (rec.pid) {
 					try {
-						process.kill(rec.pid, 0);
+						process.kill(rec.pid, SIGNAL_PROBE);
 						alive = true;
 					} catch {}
 				}
-				if (alive) {
-					// Cannot reattach to stdio; treat as lost so the model decides.
-					this.finish(job, "lost", "resumed: process still alive but unattached");
-				} else {
-					this.finish(job, "lost", "resumed: process gone");
-				}
+				// Cannot reattach to stdio; treat as lost so the model decides.
+				this.finish(job, LOST, alive ? NOTE_RESUMED_ALIVE : NOTE_RESUMED_GONE);
 			}
 		}
 	}
 
 	start(kind: string, command: string, cwd: string): JobRecord {
 		const cfg = this.kinds[kind];
-		if (!cfg) throw new Error(`Unknown kind '${kind}'. Known: ${this.kindNames().join(", ")}`);
-		if (cfg.class === "irreversible" && !this.allowIrreversible) {
-			throw new Error(
-				`Kind '${kind}' is irreversible and disabled. Ask the user to confirm and set PI_JOBS_ALLOW_IRREVERSIBLE=1.`,
-			);
-		}
+		if (!cfg) throw new Error(unknownKind(kind, this.kindNames()));
+		if (cfg.class === CLASS_IRREVERSIBLE && !this.allowIrreversible) throw new Error(irreversibleDisabled(kind));
 		const job_id = `${kind}-${++this.seq}`;
 		const rec: JobRecord = {
 			job_id,
 			kind,
 			command,
 			cwd,
-			state: "queued",
+			state: QUEUED,
 			started_at: Date.now(),
 			sla_s: cfg.sla_s,
 			heartbeat_s: cfg.heartbeat_s,
-			reversible: cfg.class === "idempotent" || cfg.class === "reversible",
+			reversible: cfg.class === CLASS_IDEMPOTENT || cfg.class === CLASS_REVERSIBLE,
 			cancelable: cfg.cancelable,
 		};
 		const job: LiveJob = { rec, lines: [], partial: "", lastBeat: Date.now(), timers: [], terminal: false };
 		this.jobs.set(job_id, job);
 
-		const child = spawn("/bin/sh", ["-c", command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn(SHELL, [SHELL_FLAG, command], { cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 		job.child = child;
 		rec.pid = child.pid;
-		rec.state = "running";
+		rec.state = RUNNING;
 		this.hooks.onPersist(rec);
 
 		const onData = (buf: Buffer) => {
 			job.lastBeat = Date.now();
-			job.partial += buf.toString("utf8");
-			const parts = job.partial.split("\n");
+			job.partial += buf.toString(ENCODING);
+			const parts = job.partial.split(LINE_BREAK);
 			job.partial = parts.pop() ?? "";
 			for (const line of parts) this.pushLine(job, line);
 		};
 		child.stdout?.on("data", onData);
 		child.stderr?.on("data", onData);
-		child.on("error", (e) => this.finish(job, "failed", `spawn error: ${e.message}`));
+		child.on("error", (e) => this.finish(job, FAILED, spawnError(e.message)));
 		child.on("close", (code, sig) => {
 			if (job.partial) this.pushLine(job, job.partial);
 			job.partial = "";
 			rec.exit_code = code;
 			if (job.terminal) return;
-			if (code === 0) this.finish(job, "completed");
-			else if (sig && code === null) this.finish(job, "lost", `killed by signal ${sig}`);
-			else this.finish(job, "failed", `exit ${code}`);
+			if (code === 0) this.finish(job, COMPLETED);
+			else if (sig && code === null) this.finish(job, LOST, killedBySignal(sig));
+			else this.finish(job, FAILED, exitCode(code));
 		});
 
 		job.timers.push(
 			setTimeout(() => {
 				if (job.terminal) return;
 				// SLA miss: report, do not kill. The model chooses cancel / keep_waiting.
-				this.emit(job, "timed_out", "sla");
+				this.emit(job, TIMED_OUT, SLA_STEP);
 			}, cfg.sla_s * 1000),
 		);
 		if (cfg.heartbeat_s > 0) {
@@ -174,7 +206,7 @@ export class Supervisor {
 				setInterval(() => {
 					if (job.terminal) return;
 					if (Date.now() - job.lastBeat > cfg.heartbeat_s * 2000) {
-						this.finish(job, "lost", "heartbeat missed");
+						this.finish(job, LOST, NOTE_HEARTBEAT);
 						// Unattended policy: auto-cancel on lost.
 						this.kill(job);
 					}
@@ -197,17 +229,17 @@ export class Supervisor {
 	logs(job_id: string, tail: number): string[] | undefined {
 		const j = this.jobs.get(job_id);
 		if (!j) return undefined;
-		return j.lines.slice(-Math.max(1, Math.min(tail, 200)));
+		return j.lines.slice(-Math.max(1, Math.min(tail, MAX_TAIL)));
 	}
 
 	cancel(job_id: string): string {
 		const j = this.jobs.get(job_id);
-		if (!j) throw new Error(`Unknown job ${job_id}`);
-		if (j.terminal) return `already ${j.rec.state}`;
-		if (!j.rec.cancelable) throw new Error(`Job ${job_id} is not cancelable`);
-		this.finish(j, "cancelled");
+		if (!j) throw new Error(unknownJob(job_id));
+		if (j.terminal) return alreadyState(j.rec.state);
+		if (!j.rec.cancelable) throw new Error(notCancelable(job_id));
+		this.finish(j, CANCELLED);
 		this.kill(j);
-		return "cancelled";
+		return RESULT_CANCELLED;
 	}
 
 	shutdown() {
@@ -224,13 +256,13 @@ export class Supervisor {
 		const pid = j.child?.pid ?? j.rec.pid;
 		if (!pid) return;
 		try {
-			process.kill(-pid, "SIGTERM");
+			process.kill(-pid, SIGTERM);
 		} catch {}
 		setTimeout(() => {
 			try {
-				process.kill(-pid, "SIGKILL");
+				process.kill(-pid, SIGKILL);
 			} catch {}
-		}, 3000).unref();
+		}, KILL_GRACE_MS).unref();
 	}
 
 	private pushLine(j: LiveJob, line: string) {
@@ -244,7 +276,7 @@ export class Supervisor {
 	}
 
 	private last(j: LiveJob) {
-		return (j.lines[j.lines.length - 1] ?? "").slice(0, 200);
+		return (j.lines[j.lines.length - 1] ?? "").slice(0, LAST_LINE_MAX);
 	}
 
 	private finish(j: LiveJob, state: JobState, note?: string) {
@@ -256,15 +288,15 @@ export class Supervisor {
 		}
 		j.timers = [];
 		j.rec.state = state;
-		if (note) this.pushLine(j, `[host] ${note}`);
+		if (note) this.pushLine(j, hostLine(note));
 		this.emit(j, state, note ?? "");
 	}
 
 	private emit(j: LiveJob, state: JobState, step: string) {
-		if (state === "timed_out") j.rec.state = "timed_out";
+		if (state === TIMED_OUT) j.rec.state = TIMED_OUT;
 		this.hooks.onPersist(j.rec);
 		this.hooks.onEvent({
-			type: "job_event",
+			type: EVENT_TYPE,
 			job_id: j.rec.job_id,
 			state,
 			step,
