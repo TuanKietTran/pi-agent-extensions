@@ -18,5 +18,6 @@
       "*": ["/opt/homebrew/Cellar/pi-coding-agent/0.84.4/libexec/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/*"]
     }
   },
-  "include": ["core/**/*.ts", "gc-assets/**/*.ts"]
+  "include": ["**/*.ts"],
+  "exclude": ["**/node_modules", "**/.build"]
 }
