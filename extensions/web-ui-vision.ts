@@ -5,9 +5,9 @@ import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { chromium, type Browser, type Download, type Locator, type Page } from "playwright-core";
 
-const CDP_URL = process.env.PI_WEB_UI_CDP_URL?.trim();
+// Always use a private headless browser. Attaching via CDP or launching a
+// visible window can select/focus the user's browser and interrupt their input.
 const START_URL = process.env.PI_WEB_UI_URL?.trim() || "about:blank";
-const HEADLESS = /^(1|true|yes)$/i.test(process.env.PI_WEB_UI_HEADLESS ?? "");
 const ACTION_TIMEOUT = positiveInt(process.env.PI_WEB_UI_TIMEOUT_MS, 15_000);
 const MAX_ELEMENTS = positiveInt(process.env.PI_WEB_UI_MAX_ELEMENTS, 200);
 const MAX_SNAPSHOT_BYTES = 32 * 1024;
@@ -53,20 +53,10 @@ export default function webUiVision(pi: ExtensionAPI) {
   async function ensureBrowser(): Promise<Browser> {
     if (browser?.isConnected()) return browser;
 
-    if (CDP_URL) {
-      browser = await chromium.connectOverCDP(CDP_URL, { timeout: ACTION_TIMEOUT });
-      ownsBrowser = false;
-    } else {
-      const executablePath = findBrowserExecutable();
-      if (!executablePath) {
-        throw new Error(
-          "No Chromium browser found. Set PI_WEB_UI_EXECUTABLE_PATH, or start Chrome with " +
-          "--remote-debugging-port=9222 and set PI_WEB_UI_CDP_URL=http://127.0.0.1:9222.",
-        );
-      }
-      browser = await chromium.launch({ executablePath, headless: HEADLESS });
-      ownsBrowser = true;
-    }
+    const executablePath = findBrowserExecutable();
+    if (!executablePath) throw new Error("No Chromium browser found. Set PI_WEB_UI_EXECUTABLE_PATH.");
+    browser = await chromium.launch({ executablePath, headless: true });
+    ownsBrowser = true;
 
     browser.on("disconnected", () => {
       browser = undefined;
@@ -116,7 +106,8 @@ export default function webUiVision(pi: ExtensionAPI) {
         const selected = allPages().find((page) => pageId(page) === params.page_id);
         if (!selected) throw new Error(`Unknown page_id: ${params.page_id ?? "(missing)"}`);
         activePage = selected;
-        await selected.bringToFront();
+        // Selection is extension-local state, not a request to raise the tab
+        // over whatever the user is currently doing.
       } else if (params.action === "close") {
         const selected = params.page_id
           ? allPages().find((page) => pageId(page) === params.page_id)
@@ -340,10 +331,10 @@ export default function webUiVision(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    if (!CDP_URL && !process.env.PI_WEB_UI_EXECUTABLE_PATH) return;
+    if (!process.env.PI_WEB_UI_EXECUTABLE_PATH) return;
     try {
       await ensureBrowser();
-      ctx.ui.notify(`Web UI vision ready${CDP_URL ? ` via ${CDP_URL}` : ""}`, "info");
+      ctx.ui.notify("Web UI vision ready (isolated headless browser)", "info");
     } catch (error) {
       ctx.ui.notify(`Web UI vision: ${errorMessage(error)}`, "warning");
     }
