@@ -77,7 +77,7 @@ is needed. Each window shows its label, usage percentage, reset countdown, and a
 track; orange `!` marks cached/unavailable data, and red marks usage at 90% or
 higher. The adjacent **Optimize** button sends a local Unix-socket request to
 Pi's most recently active session (no global shortcut, app activation, or keyboard
-input). The bundled `context-optimize.ts` extension compacts that idle Pi session
+input). The bundled `core/guards/context-optimize.ts` extension compacts that idle Pi session
 into a concise implementation-state summary. Compaction rotates across available
 Claude Haiku 4.5, GPT-5.5, and local llama.cpp/MLX tiers, immediately failing over
 on usage limits, broken streams, API failures, or network errors. It does nothing
