@@ -16,6 +16,18 @@
 ## Job kinds
 
 Parsed by the extension. `class`: idempotent | reversible | compensable | irreversible.
+
+Irreversible jobs remain blocked unless the user-level `~/.pi/agent/settings.json` contains:
+
+```json
+{
+  "jobs": {
+    "allowIrreversible": true
+  }
+}
+```
+
+Run `/reload` after changing the setting. `PI_JOBS_ALLOW_IRREVERSIBLE=1` remains a process-level override.
 `sla_s`: hard timeout. `heartbeat_s`: 0 disables lost-detection by silence.
 
 ```json

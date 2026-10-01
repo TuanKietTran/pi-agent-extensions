@@ -88,7 +88,7 @@ const NOTE_HEARTBEAT = "heartbeat missed";
 const RESULT_CANCELLED = "cancelled";
 const unknownKind = (kind: string, known: string[]) => `Unknown kind '${kind}'. Known: ${known.join(", ")}`;
 const irreversibleDisabled = (kind: string) =>
-	`Kind '${kind}' is irreversible and disabled. Ask the user to confirm and set PI_JOBS_ALLOW_IRREVERSIBLE=1.`;
+	`Kind '${kind}' is irreversible and disabled. Ask the user to confirm, set jobs.allowIrreversible=true in ~/.pi/agent/settings.json, and run /reload.`;
 const unknownJob = (id: string) => `Unknown job ${id}`;
 const notCancelable = (id: string) => `Job ${id} is not cancelable`;
 const alreadyState = (state: JobState) => `already ${state}`;

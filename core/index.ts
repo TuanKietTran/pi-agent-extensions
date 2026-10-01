@@ -23,6 +23,9 @@ const ENTRY_CUSTOM = "custom";
 const EXTENSIONS_SUBDIR = [".pi", "agent", "extensions", "core"];
 const ENV_ALLOW_IRREVERSIBLE = "PI_JOBS_ALLOW_IRREVERSIBLE";
 const ENV_ENABLED = "1";
+const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const DEFAULT_AGENT_DIR = [".pi", "agent"];
+const SETTINGS_FILE = "settings.json";
 
 // Markdown files and headings
 const RULES_FILE = "rules.md";
@@ -59,6 +62,20 @@ const NOTE_WARNING = "warning";
 const NOTE_INFO = "info";
 const unknownJob = (id: string) => `Unknown job ${id}`;
 const jobLine = (j: JobRecord) => `${j.job_id}: ${j.state}`;
+
+function agentDir(): string {
+	return process.env[AGENT_DIR_ENV] || path.join(os.homedir(), ...DEFAULT_AGENT_DIR);
+}
+
+function allowIrreversibleJobs(): boolean {
+	if (process.env[ENV_ALLOW_IRREVERSIBLE] === ENV_ENABLED) return true;
+	try {
+		const settings = JSON.parse(fs.readFileSync(path.join(agentDir(), SETTINGS_FILE), "utf8"));
+		return settings?.jobs?.allowIrreversible === true;
+	} catch {
+		return false;
+	}
+}
 
 function coreDir(): string {
 	try {
@@ -119,7 +136,7 @@ export default function core(pi: ExtensionAPI) {
 	registerReplay(pi);
 	let cfg = loadConfig();
 	let sup: Supervisor | undefined;
-	const allowIrreversible = process.env[ENV_ALLOW_IRREVERSIBLE] === ENV_ENABLED;
+	const allowIrreversible = allowIrreversibleJobs();
 
 	const text = (t: string, details: unknown = undefined) => ({ content: [{ type: "text" as const, text: t }], details });
 
