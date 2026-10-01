@@ -14,7 +14,7 @@ extension system in `exts/`.
 | Extension | What it does |
 |---|---|
 | `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with Touch Bar charts and a persistent right-panel TUI showing context/quota progress bars plus session input/output tokens. See its README for native host setup. |
-| `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
+| `claude-cli/` | Git submodule ([`pi-extension-claude-cli`](https://github.com/TuanKietTran/pi-extension-claude-cli), relative URL so it follows the parent clone's protocol and auth): wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
 | `odysseus-bridge/` | Git submodule: exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
 | `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
 | `web-ui-vision/` | Git submodule: visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |

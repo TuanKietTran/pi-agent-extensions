@@ -3,7 +3,7 @@
 	url = https://github.com/TuanKietTran/pi-touchbar-usage.git
 [submodule "claude-cli"]
 	path = claude-cli
-	url = https://github.com/TuanKietTran/pi-extension-claude-cli.git
+	url = ../pi-extension-claude-cli.git
 [submodule "odysseus-bridge"]
 	path = odysseus-bridge
 	url = https://github.com/TuanKietTran/pi-extension-odysseus-bridge.git
