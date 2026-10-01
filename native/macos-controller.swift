@@ -97,18 +97,19 @@ struct BrowserWindow {
 }
 
 // Normal-layer browser windows, including covered, minimized, and other-Space windows.
-// CGWindowList keeps their backing surfaces available for direct, focus-free capture.
-func browserWindow(_ name: String) -> BrowserWindow? {
+// CGWindowList is not ordered like the browser's AppleScript window list, so match the active
+// tab title when available. Otherwise prefer an on-screen window over stale off-screen surfaces.
+func browserWindow(_ name: String, preferredTitle: String? = nil) -> BrowserWindow? {
     guard !name.isEmpty,
           let list = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-    for info in list {
+    let windows = list.compactMap { info -> BrowserWindow? in
         guard (info[kCGWindowOwnerName as String] as? String) == name,
               (info[kCGWindowLayer as String] as? Int) == 0,
               let number = info[kCGWindowNumber as String] as? NSNumber,
               let ownerPID = info[kCGWindowOwnerPID as String] as? NSNumber,
               let bounds = info[kCGWindowBounds as String] as? NSDictionary,
               let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
-              rect.width >= 200, rect.height >= 150 else { continue }
+              rect.width >= 200, rect.height >= 150 else { return nil }
         return BrowserWindow(
             id: CGWindowID(number.uint32Value),
             pid: pid_t(ownerPID.int32Value),
@@ -117,7 +118,11 @@ func browserWindow(_ name: String) -> BrowserWindow? {
             title: (info[kCGWindowName as String] as? String) ?? ""
         )
     }
-    return nil
+    if let preferredTitle, !preferredTitle.isEmpty,
+       let exact = windows.first(where: { $0.title == preferredTitle }) {
+        return exact
+    }
+    return windows.first(where: { $0.onScreen }) ?? windows.first
 }
 
 func targetDisplay(displays: [CGRect], window: CGRect?, cursor: CGPoint) -> CGRect {
@@ -287,9 +292,10 @@ if inputCommands.contains(command) && targetPID == nil {
 switch command {
 case "status":
     let browserName = arguments.count > 2 ? arguments[2] : ""
+    let preferredTitle = arguments.count > 3 && !arguments[3].isEmpty ? arguments[3] : nil
     let cursor = currentCursor()
     let displays = activeDisplays()
-    let window = browserWindow(browserName)
+    let window = browserWindow(browserName, preferredTitle: preferredTitle)
     let app = NSWorkspace.shared.frontmostApplication
     emit([
         "accessibility": AXIsProcessTrusted(),

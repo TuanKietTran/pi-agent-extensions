@@ -126,6 +126,11 @@ function run(argv) {
     const window = windows[indexes.windowIndex];
     if (!window.tabs()[indexes.tabIndex]) throw new Error("Unknown browser tab index");
     window.activeTabIndex = indexes.tabIndex + 1;
+    // Selecting a tab in a non-front window must also raise that window; otherwise
+    // CGWindow capture and PID-routed input can remain attached to another window.
+    try { window.index = 1; } catch (error) {}
+    browser.activate();
+    waitFor(() => browser.frontmost(), 3);
     return describe(window.activeTab());
   }
 

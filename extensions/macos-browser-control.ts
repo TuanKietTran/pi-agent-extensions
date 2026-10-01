@@ -220,8 +220,13 @@ export default function macosBrowserControl(pi: ExtensionAPI) {
     return result.stdout.trim();
   }
 
-  async function nativeStatus(signal?: AbortSignal): Promise<NativeStatus> {
-    return JSON.parse(await runNative([ACTION_STATUS, BROWSER_APP], signal)) as NativeStatus;
+  async function nativeStatus(signal?: AbortSignal, preferredTitle?: string): Promise<NativeStatus> {
+    return JSON.parse(await runNative([ACTION_STATUS, BROWSER_APP, preferredTitle ?? ""], signal)) as NativeStatus;
+  }
+
+  function titleFromBrowserInfo(output: string): string | undefined {
+    const title = output.match(/^title=(.*)$/m)?.[1]?.trim();
+    return title || undefined;
   }
 
   async function browser(action: string, args: string[] = [], signal?: AbortSignal): Promise<string> {
@@ -311,7 +316,7 @@ export default function macosBrowserControl(pi: ExtensionAPI) {
         onUpdate?.({ content: [{ type: BLOCK_TEXT, text: MESSAGE_CAPTURING }], details: {} });
         const browserInfo = await browser(ACTION_STATUS, [], signal).catch((error) => `browser_status_error=${errorMessage(error)}`);
         await sleep(params.delay_ms ?? ACTION_DELAY, signal);
-        const status = await nativeStatus(signal);
+        const status = await nativeStatus(signal, titleFromBrowserInfo(browserInfo));
         if (!status.screenRecording) {
           throw new Error(MESSAGE_SCREEN_RECORDING);
         }
