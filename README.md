@@ -2,11 +2,13 @@
 
 A Pi extension for administering **Cloudflare** and **Tailscale** through their official REST APIs.
 
-Credentials are held only in the extension's memory and are erased on logout, reload, session switch, or Pi shutdown. They are never added to the Pi transcript, tool arguments, or files.
+Verified Cloudflare tokens are saved in the current user's macOS Login Keychain and loaded automatically in later Pi sessions. Tailscale credentials remain session-scoped. Credentials are never added to the Pi transcript, tool arguments, repository files, or plaintext configuration files.
 
 ## Security model
 
 - Interactive secrets are entered through a masked TUI prompt.
+- Cloudflare tokens are stored as a generic Login Keychain item with service `pi-cloud-admin.cloudflare` and the current macOS username as its account.
+- `/cloud-admin-logout cloudflare` removes both the in-memory credential and its Keychain item.
 - API permissions are determined by the Cloudflare token or Tailscale key/OAuth client you supply.
 - Every non-GET request requires an interactive confirmation.
 - Non-GET requests are blocked in print/JSON mode where confirmation is unavailable.
@@ -43,7 +45,7 @@ pi install /Users/handlerone/Downloads/pi-cloud-admin
 /cloud-admin-logout all
 ```
 
-Cloudflare login accepts an API token and verifies it with `GET /user/tokens/verify`.
+Cloudflare login accepts an API token, verifies it with `GET /user/tokens/verify`, and saves it in macOS Login Keychain. On subsequent starts, the extension loads that Keychain item automatically. Environment credentials take precedence when present.
 
 Tailscale login supports:
 
@@ -69,7 +71,7 @@ export TAILSCALE_OAUTH_CLIENT_ID='...'
 export TAILSCALE_OAUTH_CLIENT_SECRET='...'
 ```
 
-Environment values are read into session memory. Remember that environment variables remain available to other processes/tools launched by the same Pi process; masked interactive login offers stronger isolation from Pi's built-in shell tool.
+Environment values are read into session memory and take precedence over Keychain values. Remember that environment variables remain available to other processes/tools launched by the same Pi process; masked interactive login backed by Login Keychain offers stronger isolation from Pi's built-in shell tool.
 
 ## LLM tools
 

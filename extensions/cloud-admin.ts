@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { userInfo } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_MAX_BYTES,
@@ -20,13 +22,15 @@ const TAILSCALE_BASE = "https://api.tailscale.com/api/v2";
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 1024 * 1024;
 const SENSITIVE_KEY = /(^|_)(authorization|cookie|password|secret|token|api[_-]?key|key)($|_)/i;
+const KEYCHAIN_ACCOUNT = userInfo().username;
+const KEYCHAIN_SERVICE_PREFIX = "pi-cloud-admin";
 
 type Provider = "cloudflare" | "tailscale";
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 interface Credential {
   authorization: string;
-  source: "interactive" | "environment";
+  source: "interactive" | "environment" | "keychain";
   expiresAt?: number;
 }
 
@@ -72,12 +76,84 @@ class MaskedInput implements Component, Focusable {
     return [
       truncateToWidth(this.title, width, "…"),
       truncateToWidth(`> ${hidden}${cursor}`, width, ""),
-      truncateToWidth("Enter to submit · Escape to cancel · value is not persisted", width, "…"),
+      truncateToWidth("Enter to submit · Escape to cancel · secret input stays out of the transcript", width, "…"),
     ];
   }
 
   invalidate(): void {
     this.input.invalidate();
+  }
+}
+
+function keychainService(provider: Provider): string {
+  return `${KEYCHAIN_SERVICE_PREFIX}.${provider}`;
+}
+
+function runSecurity(args: string[], input?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/security", args, { stdio: ["pipe", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"));
+      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || `security exited with code ${code}`));
+    });
+    child.stdin.end(input);
+  });
+}
+
+async function loadKeychainToken(provider: Provider): Promise<string | undefined> {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const value = await runSecurity([
+      "find-generic-password",
+      "-w",
+      "-a",
+      KEYCHAIN_ACCOUNT,
+      "-s",
+      keychainService(provider),
+    ]);
+    return value.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveKeychainToken(provider: Provider, token: string): Promise<void> {
+  if (process.platform !== "darwin") throw new Error("persistent login currently requires macOS Login Keychain");
+  await runSecurity(
+    [
+      "add-generic-password",
+      "-U",
+      "-a",
+      KEYCHAIN_ACCOUNT,
+      "-s",
+      keychainService(provider),
+      "-l",
+      `Pi Cloud Admin — ${provider[0]!.toUpperCase()}${provider.slice(1)}`,
+      "-j",
+      `${provider} API token for the Pi cloud-admin extension`,
+      "-w",
+    ],
+    `${token}\n${token}\n`,
+  );
+}
+
+async function deleteKeychainToken(provider: Provider): Promise<void> {
+  if (process.platform !== "darwin") return;
+  try {
+    await runSecurity([
+      "delete-generic-password",
+      "-a",
+      KEYCHAIN_ACCOUNT,
+      "-s",
+      keychainService(provider),
+    ]);
+  } catch {
+    // Missing entries are already logged out.
   }
 }
 
@@ -236,8 +312,10 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     cloudflare = { authorization: `Bearer ${token}`, source: "interactive" };
     try {
       await apiRequest("cloudflare", "GET", "/user/tokens/verify", undefined, new AbortController().signal);
+      await saveKeychainToken("cloudflare", token);
+      cloudflare.source = "keychain";
       updateStatus(ctx);
-      ctx.ui.notify("Cloudflare session login verified", "info");
+      ctx.ui.notify("Cloudflare login verified and saved in macOS Login Keychain", "info");
     } catch (error) {
       cloudflare = undefined;
       updateStatus(ctx);
@@ -273,7 +351,7 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
   };
 
   pi.registerCommand("cloud-admin-login", {
-    description: "Load Cloudflare or Tailscale admin credentials into memory for this Pi session",
+    description: "Load admin credentials; verified Cloudflare tokens are saved in macOS Login Keychain",
     getArgumentCompletions: (prefix) =>
       (["cloudflare", "tailscale"] as const)
         .filter((value) => value.startsWith(prefix))
@@ -298,14 +376,19 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
       if (!provider || provider === "all") {
         cloudflare = undefined;
         tailscale = undefined;
-      } else if (provider === "cloudflare") cloudflare = undefined;
-      else if (provider === "tailscale") tailscale = undefined;
-      else {
+        await Promise.all([deleteKeychainToken("cloudflare"), deleteKeychainToken("tailscale")]);
+      } else if (provider === "cloudflare") {
+        cloudflare = undefined;
+        await deleteKeychainToken("cloudflare");
+      } else if (provider === "tailscale") {
+        tailscale = undefined;
+        await deleteKeychainToken("tailscale");
+      } else {
         ctx.ui.notify("Usage: /cloud-admin-logout [cloudflare|tailscale|all]", "error");
         return;
       }
       updateStatus(ctx);
-      ctx.ui.notify("Admin credentials erased from memory", "info");
+      ctx.ui.notify("Admin credentials erased from memory and macOS Login Keychain", "info");
     },
   });
 
@@ -376,6 +459,10 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     const cfToken = process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
     const tsToken = process.env.TAILSCALE_API_KEY || process.env.TS_API_KEY;
     if (cfToken) cloudflare = { authorization: `Bearer ${cfToken}`, source: "environment" };
+    else {
+      const saved = await loadKeychainToken("cloudflare");
+      if (saved) cloudflare = { authorization: `Bearer ${saved}`, source: "keychain" };
+    }
     if (tsToken) {
       tailscale = {
         authorization: `Basic ${Buffer.from(`${tsToken}:`).toString("base64")}`,
