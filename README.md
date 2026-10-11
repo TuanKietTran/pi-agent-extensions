@@ -27,7 +27,7 @@ extension system in `exts/`.
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 | `tui/` | Owns the responsive fullscreen layout and `/right-panel` collapse command: tools at the panel top, `aboveEditor` widgets in its middle, and `belowEditor` widgets plus statuses/footer at the bottom. Run `npm run install:tui` after Pi upgrades. |
-| `core/` | Job supervisor (`start_job`, `job_status`, `cancel_job`, `job_logs`) with steered `job_event`s, the todo queue (`core/todo.ts`), plus the bundled guards in `core/guards/` (context-guard, answer-floor, context-optimize, file-tool-discipline). All prompts load from `rules.md`, all limits and model context from `contexts.md`, job kinds and commands from `commands.md` (three md files in total); dev replay in `core/dev/`. |
+| `core/` | Job supervisor (`start_job`, `job_status`, `cancel_job`, `job_logs`) with steered `job_event`s, the todo queue (`core/todo.ts`), plus the bundled guards in `core/guards/` (context-guard, answer-floor, context-optimize, file-tool-discipline). All prompts load from `rules.md`, all numeric limits from `contexts.md`, job kinds and commands from `commands.md` (three md files in total). The job tools and their rules exist only where `/bin/sh` does, so they are absent on native Windows. Dev replay, tests, and the token benchmark live in `core/dev/`. |
 | `gc-assets/` | Right-panel heap/RSS bars plus a background scan of pi-owned assets (tool-output temp, pi temp, sessions, package cache) with stale-byte counts. `/gc [status\|scan\|heap\|sweep [sessions]\|age <days>\|hide\|show]`: `heap` forces V8 GC; `sweep` deletes files older than the age (default 7d) after confirmation, and only touches sessions when named explicitly. |
 | `core/todo.ts` | Persistent human-ordered todo queue in the right panel. The agent adds discovered work through the `todo` tool and auto-continues with the next open item. Use `/todo` or Ctrl-Shift-T to reorder/status/delete interactively; `/todo add <text>`, `/todo move <id> <position>`, and `/todo auto on\|off` work directly. |
 
@@ -92,6 +92,37 @@ Compaction triggers at `contextWindow − reserveTokens`, so the reserve has to
 cover the hidden safety margin *plus* a full reply. Anything less and compaction
 fires only after the budget has already collapsed. `core/guards/answer-floor.ts` is the
 backstop for when that rule drifts — a new model, a hand-edited setting.
+
+## Token and cache discipline (core)
+
+Everything `core/` puts in front of the model is resent with every request, so it is kept small and kept
+append-only:
+
+- **System prompt additions are static.** `job-rules` and `todo-rules` (`rules.md`) are appended after the base
+  prompt, only while the tool they explain is active, and never contain the queue, a clock, or a counter. A byte that
+  changes early in a request invalidates every cached token after it.
+- **State goes at the end of the history, and only when it changed.** The todo queue is injected as a short
+  `<todo_queue>` message when the human changed it since the model last saw it (after a resume, `/tree`, or compaction
+  it is shown once more). The model's own `todo` calls never trigger a snapshot; their results are compact
+  (`Started #3 (2 open)`) and only `list` returns the whole queue. Before this, the full workflow text and queue were
+  persisted into the history on every prompt, empty queue included.
+- **No tools that cannot run.** `start_job` and its three companions are not registered without `/bin/sh`.
+
+Measure a change with the fake-host benchmark (no model calls). It replays one scripted 8-prompt session through
+`core/index.ts`, rebuilds each request, and reports tokens (chars/4) plus how much of the previous request stays a
+valid cache prefix:
+
+```sh
+export PI_PACKAGE_DIR=<path to @earendil-works/pi-coding-agent>   # default: Homebrew layout
+git archive HEAD core | tar -x -C /tmp/before                      # a reference to compare against
+node core/dev/token-bench.mjs --against /tmp/before/core          # add --posix on native Windows
+node core/dev/test-core.mjs && node core/dev/test-todo.mjs
+```
+
+On the scripted session, against the previous revision: 48 requests, system additions 516 -> 266 tokens and tool
+schemas 410 -> 341 per request, persisted core messages 2.3k -> 0.2k tokens, total input -9.8% (-12.9% on a host
+without `/bin/sh`), and no cache-prefix break in either version. The session's tool output, which core does not touch,
+is held constant, so the percentage depends on how much of a real session is tool output.
 
 ## Remote control
 

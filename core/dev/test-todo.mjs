@@ -2,27 +2,12 @@
 // End-to-end harness: loads core/todo.ts through Pi's own jiti + aliases and
 // drives it with a fake ExtensionAPI that mirrors the host contracts it uses.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createLoader } from "./pi-root.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const piBin = realpathSync(execFileSync("which", ["pi"], { encoding: "utf8" }).trim());
-const root = process.env.PI_PACKAGE_DIR
-  ?? resolve(dirname(piBin), "../libexec/lib/node_modules/@earendil-works/pi-coding-agent");
-const mods = join(root, "node_modules");
-const require = createRequire(join(root, "package.json"));
-const { createJiti } = await import(pathToFileURL(require.resolve("jiti")).href);
-const jiti = createJiti(import.meta.url, {
-  alias: {
-    "@earendil-works/pi-coding-agent": join(root, "dist/index.js"),
-    "@earendil-works/pi-ai": join(mods, "@earendil-works/pi-ai/dist/compat.js"),
-    "@earendil-works/pi-tui": join(mods, "@earendil-works/pi-tui/dist/index.js"),
-    typebox: require.resolve("typebox"),
-  },
-});
+const jiti = await createLoader(import.meta.url);
 const todoPanel = await jiti.import(join(here, "..", "todo.ts"), { default: true });
 
 const theme = { fg: (_c, t) => t, bold: (t) => t, strikethrough: (t) => `~${t}~` };
@@ -87,14 +72,87 @@ await test("agent adds todos; right-panel widget and status update", async () =>
   await assert.rejects(h.tool({ action: "done", id: 99 }), /not found/);
 });
 
-await test("guidance message carries the ordered queue", async () => {
+const prompt = (h) => h.emit("before_agent_start", { prompt: "x" });
+
+await test("queue snapshot is sent only when the model has not seen it", async () => {
   const h = host();
   await h.emit("session_start");
-  await h.tool({ action: "add", items: ["alpha", "beta"] });
-  const { message } = await h.emit("before_agent_start", { prompt: "x" });
+  assert.equal(await prompt(h), undefined, "empty queue adds nothing to the history");
+  await h.cmd("add alpha");
+  await h.cmd("add beta");
+  const { message } = await prompt(h);
   assert.equal(message.display, false);
-  assert.match(message.content, /1\. \[pending\] #1 alpha\n2\. \[pending\] #2 beta/);
-  assert.match(message.content, /Auto-feed is enabled/);
+  assert.equal(message.content, '<todo_queue open="2" auto_feed="on">\n#1 [pending] alpha\n#2 [pending] beta\n</todo_queue>');
+  assert.equal(await prompt(h), undefined, "an unchanged queue is not repeated");
+
+  await h.tool({ action: "add", text: "gamma" });
+  await h.tool({ action: "start", id: 1 });
+  assert.equal(await prompt(h), undefined, "the model's own changes come back in tool results, not a snapshot");
+
+  await h.cmd("move 3 1");
+  const moved = await prompt(h);
+  assert.match(moved.message.content, /#3 \[pending\] gamma\n#1 \[in_progress\] alpha\n#2 \[pending\] beta/);
+  assert.equal(await prompt(h), undefined);
+
+  await h.cmd("auto off");
+  assert.match((await prompt(h)).message.content, /auto_feed="off"/);
+});
+
+await test("a human edit made while the model works is not marked as seen", async () => {
+  const h = host();
+  await h.emit("session_start");
+  await h.tool({ action: "add", items: ["a", "b"] });
+  assert.equal(await prompt(h), undefined, "the model made the queue, so it knows it");
+  await h.cmd("add from the human");
+  await h.tool({ action: "start", id: 1 });
+  const { message } = await prompt(h);
+  assert.match(message.content, /#3 \[pending\] from the human/);
+  assert.match(message.content, /#1 \[in_progress\] a/);
+});
+
+await test("queue is shown again after compaction, resume and tree navigation; emptied queues are announced once", async () => {
+  const h = host();
+  await h.emit("session_start");
+  await h.cmd("add a");
+  await prompt(h);
+  for (const event of ["session_compact", "session_start", "session_tree"]) {
+    await h.emit(event);
+    assert.match((await prompt(h)).message.content, /#1 \[pending\] a/, `after ${event}`);
+    assert.equal(await prompt(h), undefined);
+  }
+  await h.cmd("remove 1");
+  assert.equal((await prompt(h)).message.content, '<todo_queue open="0"/>');
+  assert.equal(await prompt(h), undefined);
+});
+
+await test("a queue the model finished itself is cleared without another message", async () => {
+  const h = host();
+  await h.emit("session_start");
+  await h.tool({ action: "add", items: ["a", "b"] });
+  await h.tool({ action: "done", id: 1 });
+  await h.tool({ action: "done", id: 2 });
+  await h.emit("agent_settled");
+  assert.deepEqual(h.order(), []);
+  assert.equal(await prompt(h), undefined);
+});
+
+await test("tool results are compact; list returns the whole queue; snapshot is capped", async () => {
+  const h = host();
+  await h.emit("session_start");
+  assert.equal((await h.tool({ action: "add", items: ["a", "b", "c"] })).content[0].text, "Added #1, #2, #3 (3 open)");
+  assert.equal((await h.tool({ action: "start", id: 1 })).content[0].text, "Started #1 (3 open)");
+  assert.equal((await h.tool({ action: "done", id: 1 })).content[0].text, "Completed #1 (2 open)");
+  assert.equal((await h.tool({ action: "list" })).content[0].text, "3 todo(s)\n1. [done] #1 a\n2. [pending] #2 b\n3. [pending] #3 c");
+  await h.cmd("add d");
+  assert.equal((await prompt(h)).message.content.endsWith("#3 [pending] c\n#4 [pending] d\n(+1 done)\n</todo_queue>"), true, "done items are only counted");
+
+  const big = host();
+  await big.emit("session_start");
+  await big.tool({ action: "add", items: Array.from({ length: 45 }, (_, i) => `item ${i}`) });
+  await big.cmd("add human item");
+  const lines = (await prompt(big)).message.content.split("\n");
+  assert.equal(lines.filter((l) => l.startsWith("#")).length, 40);
+  assert.ok(lines.includes("… 6 more open"));
 });
 
 await test("auto-continues with next unfinished todo and stops without progress", async () => {
@@ -104,14 +162,14 @@ await test("auto-continues with next unfinished todo and stops without progress"
   await h.tool({ action: "add", items: ["a", "b"] });
   let r = await settle(h);
   assert.equal(r.continue, true);
-  assert.match(r.entries[0].content, /#1 a/);
+  assert.match(r.entries[0].content, /#1: a/);
   r = await settle(h);
   assert.equal(r, undefined, "no queue progress pauses auto-feed");
   assert.match(h.notes.at(-1).msg, /no queue progress/);
   await h.tool({ action: "start", id: 1 });
   await h.tool({ action: "done", id: 1 });
   r = await settle(h);
-  assert.match(r.entries[0].content, /#2 b/);
+  assert.match(r.entries[0].content, /#2: b/);
   await h.tool({ action: "done", id: 2 });
   assert.equal(await settle(h), undefined, "empty open queue ends the run");
   assert.equal(await settle(h, "aborted"), undefined);
@@ -122,7 +180,7 @@ await test("in_progress item is preferred over earlier pending items", async () 
   await h.emit("session_start");
   await h.tool({ action: "add", items: ["a", "b"] });
   await h.tool({ action: "start", id: 2 });
-  assert.match((await settle(h)).entries[0].content, /#2 b/);
+  assert.match((await settle(h)).entries[0].content, /#2: b/);
 });
 
 await test("human reordering drives the next auto-continue", async () => {
@@ -131,7 +189,7 @@ await test("human reordering drives the next auto-continue", async () => {
   await h.tool({ action: "add", items: ["a", "b", "c"] });
   await h.cmd("move 3 1");
   assert.deepEqual(h.order(), [3, 1, 2]);
-  assert.match((await settle(h)).entries[0].content, /#3 c/);
+  assert.match((await settle(h)).entries[0].content, /#3: c/);
   await h.cmd("move 3 9");
   assert.match(h.notes.at(-1).msg, /Usage: \/todo move/);
   await h.cmd("add human task");
@@ -149,7 +207,7 @@ await test("auto-feed off stops continuation", async () => {
   await h.cmd("auto off");
   assert.equal(await settle(h), undefined);
   const { message } = await h.emit("before_agent_start", { prompt: "x" });
-  assert.match(message.content, /Auto-feed is disabled/);
+  assert.match(message.content, /auto_feed="off"/);
 });
 
 await test("interactive manager reorders, cycles status, deletes, toggles auto", async () => {
@@ -214,8 +272,8 @@ await test("fully done queue auto-clears; agent clear drops done items", async (
 
   const r = host([{ type: "custom", customType: "todo-panel-state", data: { todos: [{ id: 1, text: "x", status: "done", source: "agent" }], nextId: 2, autoFeed: true } }]);
   await r.emit("session_start");
-  const { message } = await r.emit("before_agent_start", { prompt: "x" });
-  assert.match(message.content, /\(empty\)/, "restored all-done queue clears before the next prompt");
+  assert.equal(await prompt(r), undefined, "a restored all-done queue is cleared, and the model was never shown it");
+  assert.deepEqual(r.order(), []);
 });
 
 console.log(`\n${passed} passed`);
