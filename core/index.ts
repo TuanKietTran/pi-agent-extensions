@@ -11,6 +11,8 @@ import fileToolDiscipline from "./guards/file-tool-discipline.ts";
 import { registerReplay } from "./dev/replay.ts";
 import { prompt } from "./md.ts";
 import todo from "./todo.ts";
+import handoff, { handoffNudge } from "./handoff.ts";
+import rightPanel from "./right-panel.ts";
 import { Supervisor, type JobEvent, type JobRecord, type KindConfig } from "./supervisor.ts";
 
 import { PI_EVENT } from "./events.ts";
@@ -132,6 +134,8 @@ export default function core(pi: ExtensionAPI) {
 	answerFloor(pi);
 	contextOptimize(pi);
 	fileToolDiscipline(pi);
+	handoff(pi);
+	rightPanel(pi);
 	todo(pi);
 	registerReplay(pi);
 	let cfg = loadConfig();
@@ -149,7 +153,8 @@ export default function core(pi: ExtensionAPI) {
 			{
 				onEvent: (ev: JobEvent) => {
 					if (!STEER_STATES.has(ev.state)) return;
-					pi.sendUserMessage(JSON.stringify(ev), { deliverAs: "steer" });
+					const nudge = handoffNudge();
+					pi.sendUserMessage(JSON.stringify(nudge ? { ...ev, handoff_nudge: nudge } : ev), { deliverAs: "steer" });
 				},
 				onPersist: (rec: JobRecord) => pi.appendEntry(ENTRY_TYPE, rec),
 			},

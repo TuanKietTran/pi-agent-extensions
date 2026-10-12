@@ -24,6 +24,7 @@ const jiti = createJiti(import.meta.url, {
   },
 });
 const todoPanel = await jiti.import(join(here, "..", "todo.ts"), { default: true });
+const handoffModule = await jiti.import(join(here, "..", "handoff.ts"));
 
 const theme = { fg: (_c, t) => t, bold: (t) => t, strikethrough: (t) => `~${t}~` };
 
@@ -51,7 +52,10 @@ function host(branch = []) {
   };
   h.emit = async (event, payload = {}) => {
     let result;
-    for (const fn of h.handlers[event] ?? []) result = (await fn({ type: event, ...payload }, h.ctx)) ?? result;
+    for (const fn of h.handlers[event] ?? []) {
+      const next = await fn({ type: event, ...payload }, h.ctx);
+      if (next) result = result ? { ...result, ...next } : next;
+    }
     return result;
   };
   h.tool = (params) => h.tools.todo.execute("call", params, undefined, undefined, h.ctx);
@@ -59,6 +63,7 @@ function host(branch = []) {
   h.order = () => h.lastState().todos.map((t) => t.id);
   h.lastState = () => h.branch.filter((e) => e.customType === "todo-panel-state").at(-1).data;
   todoPanel(api);
+  handoffModule.default(api);
   return h;
 }
 
@@ -95,6 +100,18 @@ await test("guidance message carries the ordered queue", async () => {
   assert.equal(message.display, false);
   assert.match(message.content, /1\. \[pending\] #1 alpha\n2\. \[pending\] #2 beta/);
   assert.match(message.content, /Auto-feed is enabled/);
+});
+
+await test("handoff resumes into the next prompt and nudges when stale", async () => {
+  const h = host();
+  await h.emit("session_start");
+  await h.tools.handoff.execute("call", { action: "update", goal: "ship the fix", files: ["core/handoff.ts"] }, undefined, undefined, h.ctx);
+  const resumed = await h.emit("before_agent_start", { systemPrompt: "base" });
+  assert.match(resumed.systemPrompt, /ship the fix/);
+  for (let i = 0; i < 5; i++) await h.emit("agent_start");
+  assert.match(handoffModule.handoffNudge(), /turns old/);
+  await h.tools.handoff.execute("call", { action: "update", verification: ["test passed"] }, undefined, undefined, h.ctx);
+  assert.equal(handoffModule.handoffNudge(), undefined);
 });
 
 await test("auto-continues with next unfinished todo and stops without progress", async () => {

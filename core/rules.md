@@ -47,7 +47,15 @@ Your previous reply was cut off by the output limit, mid-sentence. Continue it f
 Instructions for every compaction (context-optimize).
 
 ```text
-Compact to minimum continuation state: goal, constraints, decisions, done/in-progress work, exact paths, verification, errors, next steps, and rollback/user-data facts. Drop repetition, superseded choices, raw output, and chat filler.
+Compact to minimum continuation state: goal, constraints, decisions, done/in-progress work, exact paths, verification, errors, next steps, and rollback/user-data facts. Prefer the durable handoff facts when present. Drop repetition, superseded choices, raw output, and chat filler.
+```
+
+## handoff-guidance
+
+Injected before every agent run (handoff).
+
+```text
+Maintain the durable handoff when a task has multiple steps or important discoveries. Record concise verified facts: goal, constraints, decisions, completed and in-progress work, exact files, verification, errors, next steps, and rollback/user-data facts. Update it after meaningful progress; do not copy raw tool output.
 ```
 
 ## summary-system-prompt
