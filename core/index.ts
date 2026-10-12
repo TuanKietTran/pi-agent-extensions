@@ -11,6 +11,8 @@ import fileToolDiscipline from "./guards/file-tool-discipline.ts";
 import { registerReplay } from "./dev/replay.ts";
 import { prompt } from "./md.ts";
 import todo, { TOOL_NAME as TODO_TOOL } from "./todo.ts";
+import handoff, { HANDOFF_RULES, HANDOFF_TOOL, handoffNudge } from "./handoff.ts";
+import rightPanel from "./right-panel.ts";
 import { SHELL, Supervisor, type JobEvent, type JobRecord, type KindConfig } from "./supervisor.ts";
 
 import { PI_EVENT } from "./events.ts";
@@ -132,6 +134,8 @@ export default function core(pi: ExtensionAPI) {
 	answerFloor(pi);
 	contextOptimize(pi);
 	fileToolDiscipline(pi);
+	handoff(pi);
+	rightPanel(pi);
 	todo(pi);
 	registerReplay(pi);
 	let cfg = loadConfig();
@@ -149,7 +153,8 @@ export default function core(pi: ExtensionAPI) {
 			{
 				onEvent: (ev: JobEvent) => {
 					if (!STEER_STATES.has(ev.state)) return;
-					pi.sendUserMessage(JSON.stringify(ev), { deliverAs: "steer" });
+					const nudge = handoffNudge();
+					pi.sendUserMessage(JSON.stringify(nudge ? { ...ev, handoff_nudge: nudge } : ev), { deliverAs: "steer" });
 				},
 				onPersist: (rec: JobRecord) => pi.appendEntry(ENTRY_TYPE, rec),
 			},
@@ -177,6 +182,7 @@ export default function core(pi: ExtensionAPI) {
 		const blocks: string[] = [];
 		if (active.has(START_TOOL) && cfg.rules) blocks.push(cfg.rules);
 		if (active.has(TODO_TOOL) && cfg.todoRules) blocks.push(cfg.todoRules);
+		if (active.has(HANDOFF_TOOL) && HANDOFF_RULES) blocks.push(HANDOFF_RULES);
 		if (blocks.length === 0) return;
 		return { systemPrompt: [event.systemPrompt, ...blocks].join(PROMPT_JOINER) };
 	});
