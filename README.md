@@ -51,8 +51,8 @@ Set these before launching Pi:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `PI_BRIDGE_HOST` | `127.0.0.1` | Listen address. Use `0.0.0.0` only on a trusted network. |
-| `PI_BRIDGE_PORT` | `8787` | Listen port. |
+| `PI_BRIDGE_HOST` (or `HOST`) | `127.0.0.1` | Listen address. Use `0.0.0.0` only on a trusted network. |
+| `PI_BRIDGE_PORT` (or `PORT`) | `8787` | Listen port. |
 | `PI_BRIDGE_API_KEY` | unset | Optional bearer/API key. |
 | `PI_BRIDGE_MAX_BODY_BYTES` | `10485760` | Maximum JSON request size. |
 | `PI_BRIDGE_REQUEST_TIMEOUT_MS` | `1800000` | Agent request timeout. |
@@ -70,7 +70,7 @@ X-API-Key: <key>
 - System/developer messages are appended to Pi's system prompt for that request.
 - The latest user message is sent to the persistent live Pi session, so Pi maintains conversation context. Use one Odysseus conversation per Pi process/session.
 - HTTP requests are serialized. A request receives `409 pi_busy` if Pi is already processing a prompt started outside the bridge.
-- The listener is a singleton across Pi processes. If the configured address already hosts a healthy `pi-odysseus-bridge`, another extension load reuses it instead of failing with `EADDRINUSE`. An unrelated service on the same address still produces an error.
+- The listener is a singleton across Pi processes. If the configured address already hosts a healthy `pi-odysseus-bridge`, another extension load reuses it. If an unrelated service holds the port, Pi remains usable and reports the conflict; set `PI_BRIDGE_PORT`/`PORT` or `PI_BRIDGE_HOST`/`HOST` to choose another bind.
 - Keep the default loopback bind unless remote access is explicitly required. The extension has the same filesystem and shell permissions as Pi.
 
 ## Install persistently (optional)

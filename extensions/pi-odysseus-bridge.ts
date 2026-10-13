@@ -10,6 +10,8 @@ const ENV_PORT = "PI_BRIDGE_PORT";
 const ENV_API_KEY = "PI_BRIDGE_API_KEY";
 const ENV_MAX_BODY = "PI_BRIDGE_MAX_BODY_BYTES";
 const ENV_TIMEOUT = "PI_BRIDGE_REQUEST_TIMEOUT_MS";
+const ENV_HOST_FALLBACK = "HOST";
+const ENV_PORT_FALLBACK = "PORT";
 const NOTE_INFO = "info";
 const SERVICE = "pi-odysseus-bridge";
 const DEFAULT_MODEL = "pi-agent";
@@ -69,6 +71,7 @@ const KEEP_ALIVE = "keep-alive";
 const NO = "no";
 const CORS_HEADERS = "Authorization, Content-Type, X-API-Key";
 const CORS_METHODS = "GET, POST, OPTIONS";
+const CORS_MAX_AGE = "600";
 const OBJECT_MODEL = "model";
 const OBJECT_LIST = "list";
 const OBJECT_COMPLETION = "chat.completion";
@@ -104,8 +107,8 @@ const bridgeAlreadyRunning = () => `Pi OpenAI bridge already running at ${bridge
 const modelMissing = (id: string) => `Model not found: ${id}`;
 const routeMissing = (method: string, pathname: string) => `Route not found: ${method} ${pathname}`;
 
-const HOST = process.env[ENV_HOST] ?? DEFAULT_HOST;
-const PORT = parsePort(process.env[ENV_PORT], 8787);
+const HOST = process.env[ENV_HOST] ?? process.env[ENV_HOST_FALLBACK] ?? DEFAULT_HOST;
+const PORT = parsePort(process.env[ENV_PORT] ?? process.env[ENV_PORT_FALLBACK], 8787);
 const API_KEY = process.env[ENV_API_KEY];
 const MAX_BODY_BYTES = parsePositiveInt(process.env[ENV_MAX_BODY], 10 * 1024 * 1024);
 const REQUEST_TIMEOUT_MS = parsePositiveInt(process.env[ENV_TIMEOUT], 30 * 60 * 1000);
@@ -120,6 +123,7 @@ type ChatRequest = {
   model?: string;
   messages?: OpenAIMessage[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
   user?: string;
 };
 
@@ -134,6 +138,7 @@ type ActiveRequest = {
   done: boolean;
   timer: NodeJS.Timeout;
   error?: Error;
+  streamUsage: boolean;
   resolve: () => void;
   reject: (error: Error) => void;
 };
@@ -165,10 +170,16 @@ export default function piOdysseusBridge(pi: ExtensionAPI) {
       ctx.ui.notify(bridgeStarted(), NOTE_INFO);
     } catch (error) {
       candidate.close();
-      if (!isAddressInUse(error) || !(await existingBridgeIsHealthy())) throw error;
-      // Another Pi process owns the one bridge daemon. Loading this extension
-      // is still successful; do not tear down that process's server on exit.
-      ctx.ui.notify(bridgeAlreadyRunning(), NOTE_INFO);
+      if (!isAddressInUse(error)) throw error;
+      if (await existingBridgeIsHealthy()) {
+        // Another Pi process owns the one bridge daemon. Loading this extension
+        // is still successful; do not tear down that process's server on exit.
+        ctx.ui.notify(bridgeAlreadyRunning(), NOTE_INFO);
+      } else {
+        // An unrelated process owns the port. Keep Pi startup healthy and make
+        // the conflict actionable instead of throwing from SESSION_START.
+        ctx.ui.notify(`Pi OpenAI bridge could not bind ${bridgeUrl()} (address already in use); choose ${ENV_PORT} or ${ENV_HOST}.`, "error");
+      }
     }
   });
 
@@ -263,7 +274,7 @@ export default function piOdysseusBridge(pi: ExtensionAPI) {
         sendError(res, errorMessage(error).includes(BODY_TOO_LARGE) ? 413 : 400, errorMessage(error), ERROR_INVALID_REQUEST);
         return;
       }
-      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+      if (!isChatRequest(body) || !Array.isArray(body.messages) || body.messages.length === 0) {
         sendError(res, 400, MESSAGE_EMPTY_MESSAGES, ERROR_INVALID_REQUEST);
         return;
       }
@@ -326,7 +337,7 @@ export default function piOdysseusBridge(pi: ExtensionAPI) {
         context?.abort();
         failActive(new Error(MESSAGE_TIMEOUT));
       }, REQUEST_TIMEOUT_MS);
-      active = { id, model: activeModelId(), stream, response: res, text: "", done: false, timer, resolve, reject };
+      active = { id, model: activeModelId(), stream, streamUsage: body.stream_options?.include_usage === true, response: res, text: "", done: false, timer, resolve, reject };
       if (stream) writeSse(res, chatChunk(active, { role: ROLE_ASSISTANT }, null));
 
       req.once(EVENT_ABORTED, () => {
@@ -345,7 +356,9 @@ export default function piOdysseusBridge(pi: ExtensionAPI) {
         failActive(error instanceof Error ? error : new Error(String(error)));
       }
     }).catch((error: unknown) => {
-      if (!res.headersSent) sendError(res, 500, errorMessage(error), ERROR_PI);
+      const message = errorMessage(error);
+      const status = message === MESSAGE_TIMEOUT ? 504 : 500;
+      if (!res.headersSent) sendError(res, status, message, message === MESSAGE_TIMEOUT ? ERROR_UNAVAILABLE : ERROR_PI);
       else if (!res.writableEnded) {
         writeSse(res, { error: { message: errorMessage(error), type: ERROR_PI } });
         res.write(DONE_MARKER);
@@ -362,7 +375,7 @@ export default function piOdysseusBridge(pi: ExtensionAPI) {
 
     if (request.stream) {
       if (!request.response.writableEnded) {
-        writeSse(request.response, chatChunk(request, {}, STOP));
+        writeSse(request.response, chatChunk(request, {}, STOP, request.streamUsage));
         request.response.write(DONE_MARKER);
         request.response.end();
       }
@@ -468,13 +481,14 @@ function modelObject(model: { id: string; provider: string; created?: number }) 
   return { id: publicModelId(model), object: OBJECT_MODEL, created: model.created ?? 0, owned_by: model.provider };
 }
 
-function chatChunk(request: Pick<ActiveRequest, "id" | "model">, delta: Record<string, string>, finishReason: string | null) {
+function chatChunk(request: Pick<ActiveRequest, "id" | "model">, delta: Record<string, string>, finishReason: string | null, includeUsage = false) {
   return {
     id: request.id,
     object: OBJECT_CHUNK,
     created: Math.floor(Date.now() / 1000),
     model: request.model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
+    ...(includeUsage && finishReason === STOP ? { usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } } : {}),
   };
 }
 
@@ -510,13 +524,17 @@ function extractLatestPrompt(messages: OpenAIMessage[]) {
   return { text: contentToText(latestUser.content), images };
 }
 
-function contentToText(content: OpenAIMessage["content"]): string {
+export function contentToText(content: OpenAIMessage["content"]): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
     .filter((part) => part.type === PART_TEXT || part.type === PART_INPUT_TEXT)
     .map((part) => String(part.text ?? ""))
     .join(NEWLINE);
+}
+
+function isChatRequest(value: unknown): value is ChatRequest {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
@@ -542,6 +560,7 @@ function setCors(res: ServerResponse): void {
   res.setHeader(HEADER_CORS_ORIGIN, CORS_ANY_ORIGIN);
   res.setHeader(HEADER_CORS_HEADERS, CORS_HEADERS);
   res.setHeader(HEADER_CORS_METHODS, CORS_METHODS);
+  res.setHeader("Access-Control-Max-Age", CORS_MAX_AGE);
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -550,20 +569,24 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body);
 }
 
+export function errorBody(message: string, type: string): { error: { message: string; type: string; code: string } } {
+  return { error: { message, type, code: type } };
+}
+
 function sendError(res: ServerResponse, status: number, message: string, type: string): void {
-  sendJson(res, status, { error: { message, type, code: type } });
+  sendJson(res, status, errorBody(message, type));
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function parsePort(value: string | undefined, fallback: number): number {
+export function parsePort(value: string | undefined, fallback: number): number {
   const parsed = Number(value ?? fallback);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535 ? parsed : fallback;
 }
 
-function parsePositiveInt(value: string | undefined, fallback: number): number {
+export function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value ?? fallback);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
