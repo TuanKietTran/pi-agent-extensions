@@ -131,6 +131,7 @@ function createPanel(theme: Theme): Component {
 			api.openTab(hit.id);
 			return { handled: true, render: true };
 		},
+		invalidate() {},
 	};
 }
 

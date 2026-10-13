@@ -11,9 +11,10 @@ import fileToolDiscipline from "./guards/file-tool-discipline.ts";
 import { registerReplay } from "./dev/replay.ts";
 import { JOB_EVENT_MESSAGE, registerJobEventRenderer } from "./job-event-ui.ts";
 import { prompt } from "./md.ts";
-import todo from "./todo.ts";
+import todo, { TOOL_NAME as TODO_TOOL } from "./todo.ts";
+import handoff, { HANDOFF_RULES, HANDOFF_TOOL, handoffNudge } from "./handoff.ts";
 import rightPanel from "./right-panel.ts";
-import { Supervisor, type JobEvent, type JobRecord, type KindConfig } from "./supervisor.ts";
+import { SHELL, Supervisor, type JobEvent, type JobRecord, type KindConfig } from "./supervisor.ts";
 
 import { PI_EVENT } from "./events.ts";
 
@@ -31,28 +32,28 @@ const SETTINGS_FILE = "settings.json";
 
 // Markdown files and headings
 const RULES_FILE = "rules.md";
-const CONTEXTS_FILE = "contexts.md";
 const COMMANDS_FILE = "commands.md";
 const JOB_RULES_HEADING = "job-rules";
 const RESPONSE_RULES_HEADING = "response-rules";
-const JOB_CONTEXT_HEADING = "job-context";
+const TODO_RULES_HEADING = "todo-rules";
 const SLA_KEY = "sla_s";
+const PROMPT_JOINER = "\n\n";
 
-// Tools and command
+// Tools and command. Tool schemas are resent with every request, so descriptions stay short.
 const START_TOOL = "start_job";
 const START_LABEL = "Start job";
-const START_DESCRIPTION = "Start a host-managed long-running job. Returns immediately; a job_event is steered on completion.";
-const KIND_DESCRIPTION = `Job kind defined in ${COMMANDS_FILE} (e.g. shell, test)`;
-const COMMAND_DESCRIPTION = "Shell command to run";
+const START_DESCRIPTION = "Run a long job in the background; a job_event is steered on completion.";
+const KIND_DESCRIPTION = "Job kind (e.g. shell, test)";
+const COMMAND_DESCRIPTION = "Shell command";
 const STATUS_TOOL = "job_status";
 const STATUS_LABEL = "Job status";
-const STATUS_DESCRIPTION = "Snapshot of a job. Rare; the host steers on state changes.";
+const STATUS_DESCRIPTION = "Job state snapshot (rare; the host steers changes).";
 const CANCEL_TOOL = "cancel_job";
 const CANCEL_LABEL = "Cancel job";
-const CANCEL_DESCRIPTION = "Cancel a running job (signals its process group).";
+const CANCEL_DESCRIPTION = "Cancel a running job.";
 const LOGS_TOOL = "job_logs";
 const LOGS_LABEL = "Job logs";
-const LOGS_DESCRIPTION = "Last N log lines of a job (bounded to 200).";
+const LOGS_DESCRIPTION = "Last N job log lines (max 200).";
 const DEFAULT_TAIL = 20;
 const JOBS_COMMAND = "jobs";
 const JOBS_DESCRIPTION = "List jobs and states";
@@ -109,13 +110,13 @@ function jsonBlocks(md: string): unknown[] {
 
 interface CoreConfig {
 	rules: string;
-	contexts: string;
+	todoRules: string;
 	commands: string;
 	kinds: Record<string, KindConfig>;
 	options: Record<string, string[]>;
 }
 
-/** All behavior comes from rules.md, commands.md, contexts.md. Nothing hardcoded here. */
+/** Prompts come from rules.md, job kinds from commands.md. Nothing hardcoded here. */
 function loadConfig(): CoreConfig {
 	const commands = readFile(COMMANDS_FILE);
 	const blocks = jsonBlocks(commands) as Record<string, any>[];
@@ -129,7 +130,10 @@ function loadConfig(): CoreConfig {
 	>;
 	return {
 		rules: [prompt(RULES_FILE, JOB_RULES_HEADING), prompt(RULES_FILE, RESPONSE_RULES_HEADING)].filter(Boolean).join("\n\n"),
-		contexts: prompt(CONTEXTS_FILE, JOB_CONTEXT_HEADING), commands, kinds, options,
+		todoRules: prompt(RULES_FILE, TODO_RULES_HEADING),
+		commands,
+		kinds,
+		options,
 	};
 }
 
@@ -138,6 +142,7 @@ export default function core(pi: ExtensionAPI) {
 	answerFloor(pi);
 	contextOptimize(pi);
 	fileToolDiscipline(pi);
+	handoff(pi);
 	rightPanel(pi);
 	todo(pi);
 	registerReplay(pi);
@@ -164,6 +169,8 @@ export default function core(pi: ExtensionAPI) {
 				onEvent: (ev: JobEvent) => {
 					if (generation !== sessionGeneration || sup !== sessionSup) return;
 					if (!STEER_STATES.has(ev.state)) return;
+					const nudge = handoffNudge();
+					if (nudge) Object.assign(ev, { handoff_nudge: nudge });
 					pi.sendMessage(
 						{ customType: JOB_EVENT_MESSAGE, content: JSON.stringify(ev), display: true, details: ev },
 						{ triggerTurn: true, deliverAs: "steer" },
@@ -194,11 +201,29 @@ export default function core(pi: ExtensionAPI) {
 	});
 
 	// Re-read the markdown on every run: edits apply immediately, no reload command or tool call.
+	// The text appended here is the same on every run while the tool set is, so the cached
+	// prompt prefix survives; each block is only sent while the tool it explains is active.
 	pi.on(PI_EVENT.BEFORE_AGENT_START, async (event) => {
 		cfg = loadConfig();
 		sup?.setConfig(cfg.kinds, cfg.options);
-		return { systemPrompt: `${event.systemPrompt}\n\n${cfg.rules}\n\n${cfg.contexts}` };
+		const active = new Set(pi.getActiveTools());
+		const blocks: string[] = [];
+		if (active.has(TODO_TOOL) && cfg.todoRules) blocks.push(cfg.todoRules);
+		if (active.has(HANDOFF_TOOL) && HANDOFF_RULES) blocks.push(HANDOFF_RULES);
+		return { systemPrompt: [event.systemPrompt, cfg.rules, ...blocks].filter(Boolean).join(PROMPT_JOINER) };
 	});
+
+	pi.registerCommand(JOBS_COMMAND, {
+		description: JOBS_DESCRIPTION,
+		handler: async (_a, ctx) => {
+			const l = sup?.list() ?? [];
+			ctx.ui.notify(l.length ? l.map(jobLine).join("\n") : NO_JOBS, NOTE_INFO);
+		},
+	});
+
+	// Jobs run under SHELL. Without it (native Windows) start_job could only fail, so the
+	// four job tools and the job rules are left out instead of costing tokens on every request.
+	if (!fs.existsSync(SHELL)) return;
 
 	pi.registerTool({
 		name: START_TOOL,
@@ -261,11 +286,4 @@ export default function core(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand(JOBS_COMMAND, {
-		description: JOBS_DESCRIPTION,
-		handler: async (_a, ctx) => {
-			const l = sup?.list() ?? [];
-			ctx.ui.notify(l.length ? l.map(jobLine).join("\n") : NO_JOBS, NOTE_INFO);
-		},
-	});
 }

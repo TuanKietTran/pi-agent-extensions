@@ -35,6 +35,7 @@ type TodoToolDetails = TodoState & {
 interface TodoLimits {
   max_visible_todos: number;
   max_auto_continuations: number;
+  max_snapshot_todos: number;
 }
 
 import { PI_EVENT } from "./events.ts";
@@ -44,9 +45,9 @@ import { PI_EVENT } from "./events.ts";
 // Identifiers
 const STATE_ENTRY = "todo-panel-state";
 const WIDGET_KEY = "todo-panel";
-const GUIDANCE_ENTRY = "todo-panel-guidance";
+const QUEUE_ENTRY = "todo-queue";
 const AUTO_FEED_ENTRY = "todo-auto-feed";
-const TOOL_NAME = "todo";
+export const TOOL_NAME = "todo";
 const TOOL_LABEL = "Todo";
 const COMMAND_NAME = "todo";
 const SHORTCUT_KEY = "t";
@@ -109,11 +110,8 @@ const KEY_REMOVE = "x";
 const WIDGET_OPTIONS = { placement: "aboveEditor" } as const;
 const OVERLAY_OPTIONS = { overlay: true, overlayOptions: { anchor: "right-center", width: "45%", maxHeight: "80%" } } as const;
 
-// Tool schema text
-const DESC_ID = "Todo ID for start, done, reopen, or remove";
-const DESC_TEXT = "Todo text for add";
-const DESC_ITEMS = "Several todo texts to add in order";
-const TOOL_DESCRIPTION = "Maintain the ordered shared work queue. Add discovered work; start, complete, reopen, remove, or list items; clear drops done items. The human alone controls ordering.";
+// Tool schema text. It is resent with every request, so it stays short.
+const TOOL_DESCRIPTION = "Shared ordered work queue (only the human orders it). add: text or items. start, done, reopen, remove: id. list. clear: drops done items.";
 const COMMAND_DESCRIPTION = "Manage todos: /todo [add|move|done|remove|clear-done|auto]";
 const SHORTCUT_DESCRIPTION = "Open todo manager";
 
@@ -139,6 +137,10 @@ const widgetMore = (hidden: number) => `  … ${hidden} more · /todo`;
 const openStatus = (open: number) => `${ICON_OPEN} ${open}`;
 const todoId = (id: number) => `#${id}`;
 const listLine = (todo: Todo, index: number) => `${index + 1}. [${todo.status}] #${todo.id} ${todo.text}`;
+const queueLine = (todo: Todo) => `#${todo.id} [${todo.status}] ${todo.text}`;
+const queueMore = (hidden: number) => `… ${hidden} more open`;
+const queueDone = (count: number) => `(+${count} done)`;
+const withOpen = (message: string, open: number) => `${message} (${open} open)`;
 const pausedNoProgress = (id: number) => `Todo auto-feed paused: #${id} made no queue progress`;
 const pausedLimit = (max: number) => `Todo auto-feed paused after ${max} continuations`;
 const autoFeedState = (auto: boolean) => `Todo auto-feed ${auto ? ENABLED : DISABLED}`;
@@ -155,19 +157,21 @@ const notFoundNote = (raw: string | undefined) => `Todo #${raw ?? "?"} not found
 const resultText = (message: string, listing: string) => `${message}\n${listing}`;
 
 // Prompts and limits (from rules.md / contexts.md)
-const WORKFLOW = prompt("rules.md", "todo-workflow");
+const QUEUE_TEMPLATE = prompt("rules.md", "todo-state");
+const EMPTY_QUEUE = prompt("rules.md", "todo-empty");
 const AUTO_FEED = prompt("rules.md", "todo-auto-feed");
 const LIMITS: TodoLimits = {
   max_visible_todos: 14,
   max_auto_continuations: 20,
+  max_snapshot_todos: 40,
   ...limits<Partial<TodoLimits>>("contexts.md", "todo"),
 };
 
 const TodoParams = Type.Object({
   action: StringEnum(ACTIONS),
-  id: Type.Optional(Type.Number({ description: DESC_ID })),
-  text: Type.Optional(Type.String({ description: DESC_TEXT })),
-  items: Type.Optional(Type.Array(Type.String(), { description: DESC_ITEMS })),
+  id: Type.Optional(Type.Number()),
+  text: Type.Optional(Type.String()),
+  items: Type.Optional(Type.Array(Type.String())),
 });
 
 function cloneState(state: TodoState): TodoState {
@@ -281,6 +285,22 @@ export default function todo(pi: ExtensionAPI): void {
   let stateRevision = 0;
   let lastAutoTodoId: number | undefined;
   let lastAutoRevision = -1;
+  // What the model was last shown of the queue. It is shown again only when this
+  // differs, so idle prompts add nothing and the cached prompt prefix stays append-only.
+  let seenQueue: string | undefined;
+
+  function queueSnapshot(): string {
+    const open = state.todos.filter((item) => item.status !== DONE);
+    if (open.length === 0) return EMPTY_QUEUE;
+    const lines = open.slice(0, LIMITS.max_snapshot_todos).map(queueLine);
+    if (lines.length < open.length) lines.push(queueMore(open.length - lines.length));
+    const done = state.todos.length - open.length;
+    if (done > 0) lines.push(queueDone(done));
+    return fill(QUEUE_TEMPLATE, { open: open.length, auto: state.autoFeed ? ON : OFF, queue: lines.join("\n") });
+  }
+
+  // A model that was never shown a queue assumes there is none.
+  const modelSeesQueue = () => queueSnapshot() === (seenQueue ?? EMPTY_QUEUE);
 
   function persist(): void {
     stateRevision++;
@@ -330,6 +350,7 @@ export default function todo(pi: ExtensionAPI): void {
     stateRevision = 0;
     lastAutoTodoId = undefined;
     lastAutoRevision = -1;
+    seenQueue = undefined;
     publish(ctx);
   }
 
@@ -365,20 +386,18 @@ export default function todo(pi: ExtensionAPI): void {
   pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => restore(ctx));
   pi.on(PI_EVENT.SESSION_TREE, async (_event, ctx) => restore(ctx));
 
+  // The summary replaces the history that held the last snapshot, so show the queue again.
+  pi.on(PI_EVENT.SESSION_COMPACT, async () => {
+    seenQueue = undefined;
+  });
+
+  // The workflow rules live in the system prompt (core/index.ts). Only a queue the
+  // model has not seen goes into the history, and it is persisted there, so keep it short.
   pi.on(PI_EVENT.BEFORE_AGENT_START, async (_event, ctx) => {
     clearIfAllDone(ctx);
-    if (!WORKFLOW) return;
-    return {
-      message: {
-        customType: GUIDANCE_ENTRY,
-        display: false,
-        content: fill(WORKFLOW, {
-          auto: state.autoFeed ? ENABLED : DISABLED,
-          open: openCount(state.todos),
-          queue: listing(state.todos),
-        }),
-      },
-    };
+    if (modelSeesQueue()) return;
+    seenQueue = queueSnapshot();
+    return { message: { customType: QUEUE_ENTRY, display: false, content: seenQueue } };
   });
 
   pi.on(PI_EVENT.AGENT_START, async () => {
@@ -425,6 +444,8 @@ export default function todo(pi: ExtensionAPI): void {
     parameters: TodoParams,
     executionMode: "sequential",
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      // The model knows its own changes from this result; a human edit it has not been shown stays pending.
+      const inSync = modelSeesQueue();
       let message = "";
       if (params.action === ACTION_ADD) {
         const added = addTodos([...(params.items ?? []), ...(params.text ? [params.text] : [])], AGENT);
@@ -455,9 +476,12 @@ export default function todo(pi: ExtensionAPI): void {
           message = msgRemoved(item.id);
         }
       }
+      if (inSync || params.action === ACTION_LIST) seenQueue = queueSnapshot();
       saveAndPublish(ctx);
+      // Every result is resent with all later requests: list returns the queue, the rest only what changed.
+      const text = params.action === ACTION_LIST ? resultText(message, listing(state.todos)) : withOpen(message, openCount(state.todos));
       return {
-        content: [{ type: "text", text: resultText(message, listing(state.todos)) }],
+        content: [{ type: "text", text }],
         details: { ...cloneState(state), action: params.action, message } satisfies TodoToolDetails,
       };
     },

@@ -58,10 +58,11 @@ interface LiveJob {
 
 const RING_MAX = 500;
 const MAX_TAIL = 200;
+const MAX_LOG_BYTES = 12000;
 const LAST_LINE_MAX = 200;
 const KILL_GRACE_MS = 3000;
 const SLA_STEP = "sla";
-const SHELL = "/bin/sh";
+export const SHELL = "/bin/sh";
 const SHELL_FLAG = "-c";
 const ENCODING = "utf8";
 const LINE_BREAK = "\n";
@@ -229,7 +230,17 @@ export class Supervisor {
 	logs(job_id: string, tail: number): string[] | undefined {
 		const j = this.jobs.get(job_id);
 		if (!j) return undefined;
-		return j.lines.slice(-Math.max(1, Math.min(tail, MAX_TAIL)));
+		const lines = j.lines.slice(-Math.max(1, Math.min(tail, MAX_TAIL)));
+		let total = 0;
+		const kept: string[] = [];
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const line = lines[i]!.slice(0, LAST_LINE_MAX);
+			const size = Buffer.byteLength(line, ENCODING) + 1;
+			if (kept.length > 0 && total + size > MAX_LOG_BYTES) break;
+			kept.unshift(line);
+			total += size;
+		}
+		return kept;
 	}
 
 	cancel(job_id: string): string {
