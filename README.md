@@ -10,6 +10,7 @@ This is the native companion to DOM/CDP-oriented browser tools: it can operate b
 - Native mouse move, background click, foreground `focus_click`, double-click, right-click, drag, and pixel scrolling
 - Native Unicode typing and keyboard shortcuts
 - Focus-free direct-window screenshots, including covered, minimized, other-display, and other-Space windows
+- Background visual watcher that records a bounded series of browser-window frames and steers the agent with a chronological contact sheet; an animated GIF is saved alongside it
 - Persistent, branch-aware mouse trail overlaid on observations
 - Open/list/select/close tabs through macOS Automation
 - Accessibility and Screen Recording permission checks
@@ -22,6 +23,7 @@ This is the native companion to DOM/CDP-oriented browser tools: it can operate b
 - `mac_browser_act` — move, click, force focus with `focus_click`, drag, scroll, type, press a key, wait, or reset the trail; all actions are background-only except explicit `focus_click`
 - `mac_browser_surface` — turn native surface input on/off, toggle it, or inspect its state
 - `mac_browser_tabs` — status, open, create, list, select, or close browser tabs
+- `mac_browser_watch` — `start` watching (optional `interval_ms`, 16–5000; `assess`, default true; `record`, default true), `resume` after a change, `stop`, or `status`
 - `/mac-browser` — status command
 - `/mac-browser surface on|off|toggle|status` — control the same persisted surface-input state
 - `/mac-browser permissions` — trigger macOS permission prompts
@@ -34,6 +36,8 @@ Typical loop:
 2. Choose browser-window coordinates from the image.
 3. Call `mac_browser_act`.
 4. Observe again after the UI changes.
+
+For time-sensitive changes, call `mac_browser_watch` with `action=start` before an action. The watcher polls independently of the action queue (16 ms delay between captures by default; actual rate is limited by macOS capture time). After a meaningful change, it waits for 500 ms of visual stability or a 2-second limit; near-blank navigation frames get up to 4 seconds to finish loading. It then steers one `browser_watch_event` and pauses for `resume` or `stop`. With `record=true` (default), it retains the baseline and up to 11 subsequent samples, including brief blank/loading frames; ffmpeg saves a GIF and renders a chronological contact sheet. The contact sheet is delivered as an image even for routine events, because Pi's image reader exposes only the first GIF frame. The event includes `gif`, `contact_sheet`, and `frame_times_ms` (milliseconds from watch start). Set `record=false` to retain the former single-settled-frame behavior; if ffmpeg fails, the event reports `clip_error` and falls back to the settled image. Window-title changes are detected even when most pixels stay the same. Polling computes a local 64×36 luminance fingerprint; small hover/JPEG changes are ignored for event detection, while recorded samples preserve transient states. No model tokens are spent on unchanged polls. By default a separate image-capable model assesses each changed sequence; the chronological contact sheet is always sent to the main agent when recording is enabled. The assessor has a 120-token output limit and 20-second deadline; its usage is reported in the event. Set `assess=false` to skip the model and send every changed image. Watching expires after 120 seconds and reports errors as events. Pi delivers steering only after the current assistant turn/tool calls finish; it cannot cancel an already-running click, drag, or typing action. Re-observe before using coordinates from a watch image.
 
 ## Install
 
@@ -75,12 +79,19 @@ Restart Pi after granting permissions.
 | `PI_MAC_BROWSER_TRAIL_LENGTH` | `24` | Maximum tracked virtual-pointer positions |
 | `PI_MAC_BROWSER_SHOW_STATUS` | unset | Set to `1` to show Pi's mac-browser status decoration; hidden by default |
 | `PI_MAC_BROWSER_MAX_IMAGE_EDGE` | `1920` | Longest screenshot edge in pixels (capped at 2000, Pi's resize limit) |
+| `PI_MAC_BROWSER_WATCH_MODEL` | `openai-codex/gpt-5.6-luna` | Separate image-capable assessment model; requires existing Pi provider authentication |
+
+Temporal recording requires `ffmpeg` on `PATH`. Its clips are stored in the system temporary directory.
 
 Example:
 
 ```bash
 PI_MAC_BROWSER_APP="Brave Browser" pi -e /Users/handlerone/Downloads/pi-macos-browser-control
 ```
+
+## Token use
+
+Polling and fingerprint comparisons are local (zero model tokens). Each meaningful change makes one separate vision-model call. With recording enabled, every event sends a contact-sheet image of the sequence to the main agent; `assess=false` skips the separate call. Use `record=false` for the prior single-frame behavior (routine changes send only text). Actual image-token usage depends on the provider.
 
 ## Coordinate model
 

@@ -223,6 +223,32 @@ func parseTrail(_ text: String) -> [Point] {
     }
 }
 
+// Small, quantized luminance grid for rejecting JPEG noise and tiny hover effects.
+func fingerprint(input: String) -> String {
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: input) as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("Could not read screenshot") }
+    let width = 64, height = 36
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    let drawn = pixels.withUnsafeMutableBytes { memory -> Bool in
+        guard let context = CGContext(data: memory.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return true
+    }
+    if !drawn { fail("Could not create fingerprint canvas") }
+    var result = ""
+    result.reserveCapacity(width * height * 2)
+    for index in 0..<(width * height) {
+        let offset = index * 4
+        let luminance = (Int(pixels[offset]) * 54 + Int(pixels[offset + 1]) * 183 + Int(pixels[offset + 2]) * 19) / 256
+        let quantized = UInt8(luminance & 0xf0)
+        result += String(format: "%02x", quantized)
+    }
+    return result
+}
+
 // Renders into a bitmap of exactly width x height pixels so output size never depends on Retina scale.
 func annotate(input: String, output: String, trail: [Point], frame: CGRect, width: Int, height: Int) {
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: input) as CFURL, nil),
@@ -400,6 +426,9 @@ case "key":
     guard let code = keyCodes[name] else { fail("Unsupported key: \(name)") }
     postKey(code, flags: flags(arguments[3]), holdMicros: 35_000)
     emit(["key": name, "modifiers": arguments[3]])
+case "fingerprint":
+    guard arguments.count >= 3 else { fail("fingerprint requires screenshot path") }
+    print(fingerprint(input: arguments[2]))
 case "annotate":
     guard arguments.count >= 11 else { fail("annotate requires input, output, trail, display x/y/width/height, and image width/height") }
     let frame = CGRect(x: number(5, "displayX"), y: number(6, "displayY"), width: number(7, "displayWidth"), height: number(8, "displayHeight"))
