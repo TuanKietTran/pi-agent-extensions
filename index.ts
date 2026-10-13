@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PI_EVENT } from "./pi-events.ts";
+import { getRightPanel } from "../core/right-panel.ts";
 
 // pi reloads extensions in-process on session switch/fork, so module state is
 // rebuilt but globalThis is not. Parking the timer here keeps one poller per
@@ -28,6 +29,8 @@ const NOTE_WARNING = "warning";
 const BAR_FULL = "█";
 const BAR_EMPTY = "░";
 const PANEL_TITLE = "Usage";
+const TAB_ID = "usage";
+const TAB_ORDER = 2;
 const LABEL_CC = "CC";
 const LABEL_CX = "CX";
 const NO_AUTH = "no-auth";
@@ -102,32 +105,54 @@ function tokenTotals(ctx: ExtensionContext): { input: number; output: number } {
   return { input, output };
 }
 
-function usagePanel(ctx: ExtensionContext, published: any): string[] {
+function usagePanel(ctx: ExtensionContext, published: any, width: number): string[] {
   const totals = tokenTotals(ctx);
-  const context = ctx.getContextUsage();
-  const contextPercent = context?.percent ?? 0;
-  const lines = [
-    ctx.ui.theme.fg(TONE_ACCENT, PANEL_TITLE),
-    contextLine(progressBar(ctx, contextPercent), contextPercent),
-    tokensLine(compactNumber(totals.input), compactNumber(totals.output)),
-  ];
+  const contextPercent = ctx.getContextUsage()?.percent ?? 0;
+  const windows: { label: string; name: string; percent: number; reset: string }[] = [];
+  const errors: string[] = [];
   for (const [label, side] of [[LABEL_CC, published?.claude], [LABEL_CX, published?.codex]] as const) {
     if (!side) continue;
     if (!side.ok && !side.windows?.length) {
-      lines.push(`${label} ${ctx.ui.theme.fg(TONE_DIM, side.error === NO_AUTH ? NO_AUTH_MARK : `${ERROR_MARK}${side.error ?? ERROR_FALLBACK}`)}`);
+      errors.push(`${label} ${ctx.ui.theme.fg(TONE_DIM, side.error === NO_AUTH ? NO_AUTH_MARK : `${ERROR_MARK}${side.error ?? ERROR_FALLBACK}`)}`);
       continue;
     }
     for (const window of side.windows ?? []) {
-      const percent = Number(window.percent) || 0;
-      lines.push(windowLine(label, String(window.label), progressBar(ctx, percent), percent, resetIn(window.resetsAt)));
+      windows.push({ label, name: String(window.label), percent: Number(window.percent) || 0, reset: resetIn(window.resetsAt) });
     }
   }
-  return lines;
+
+  // Leave room for labels, percentages and reset times before sizing the bars.
+  // All bars share one scale so equal percentages have equal visual lengths.
+  const fixedWidth = Math.max(
+    contextLine("", contextPercent).length,
+    ...windows.map(({ label, name, percent, reset }) => windowLine(label, name, "", percent, reset).length),
+  );
+  const barWidth = Math.max(1, Math.min(20, width - fixedWidth));
+  return [
+    ctx.ui.theme.fg(TONE_ACCENT, PANEL_TITLE),
+    contextLine(progressBar(ctx, contextPercent, barWidth), contextPercent),
+    tokensLine(compactNumber(totals.input), compactNumber(totals.output)),
+    ...windows.map(({ label, name, percent, reset }) =>
+      windowLine(label, name, progressBar(ctx, percent, barWidth), percent, reset)),
+    ...errors,
+  ];
 }
 
+let usageContext: ExtensionContext | undefined;
+let publishedUsage: any;
+let unregisterUsage: (() => void) | undefined;
+
 function publishPanel(ctx: ExtensionContext, published: any): void {
+  usageContext = ctx;
+  publishedUsage = published;
+  unregisterUsage ??= getRightPanel().registerTab({
+    id: TAB_ID,
+    label: PANEL_TITLE,
+    order: TAB_ORDER,
+    lines: (width) => (usageContext && publishedUsage ? usagePanel(usageContext, publishedUsage, width) : []),
+  });
   ctx.ui.setStatus(KEY, undefined);
-  ctx.ui.setWidget(KEY, usagePanel(ctx, published), { placement: PLACEMENT });
+  ctx.ui.setWidget(KEY, undefined);
 }
 
 async function tick(force = false): Promise<string | undefined> {
@@ -166,6 +191,7 @@ export default function touchbarUsage(pi: ExtensionAPI) {
   });
 
   pi.on(PI_EVENT.TURN_END, async (_event, ctx) => {
+    if (!state.running) return;
     try {
       const usage = await core();
       const published = usage.readPublished();
@@ -177,9 +203,14 @@ export default function touchbarUsage(pi: ExtensionAPI) {
 
   pi.on(PI_EVENT.SESSION_SHUTDOWN, async (event) => {
     state.ctx = undefined;
+    usageContext = undefined;
     // Only tear down on a real quit. A session switching or forking inside a
     // tmux pane while other panes live on should leave the poller running.
-    if (event.reason === QUIT) stop();
+    if (event.reason === QUIT) {
+      stop();
+      unregisterUsage?.();
+      unregisterUsage = undefined;
+    }
   });
 
   pi.registerCommand(KEY, {
@@ -190,6 +221,8 @@ export default function touchbarUsage(pi: ExtensionAPI) {
 
       if (action === ACTION_STOP) {
         stop();
+        unregisterUsage?.();
+        unregisterUsage = undefined;
         ctx.ui.setStatus(KEY, undefined);
         ctx.ui.setWidget(KEY, undefined);
         ctx.ui.notify(NOTE_STOPPED, NOTE_INFO);
