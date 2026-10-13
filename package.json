@@ -6,6 +6,8 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test core/dev/*.test.ts claude-cli/*.test.ts",
     "install:tui": "node ./tui/install-layout.mjs"
   },
   "dependencies": {
@@ -13,7 +15,6 @@
   },
   "pi": {
     "extensions": [
-      "./tui/index.ts",
       "./gc-assets/index.ts",
       "./thinking-control.ts",
       "./usage-roundrobin.ts",

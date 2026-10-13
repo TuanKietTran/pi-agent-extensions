@@ -171,6 +171,8 @@ pi loads them from trusted locations only:
 
 ## Working on these
 
+Extension entry points use the declaration-first structure documented in [`core/DESIGN.md`](core/DESIGN.md): shared Pi event constants, top-level command/tool metadata, Markdown-owned model policy, and registry-owned right-panel tabs. `npm test` guards against embedding lifecycle and command names directly in registrations; `npm run check` type-checks the aggregate checkout.
+
 Extensions in auto-discovered locations hot-reload with `/reload` inside pi. Use
 `pi -e ./path.ts` only for one-off tests — it bypasses discovery and cannot be
 reloaded.

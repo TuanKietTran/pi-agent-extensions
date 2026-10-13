@@ -3,8 +3,36 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { networkInterfaces } from "node:os";
+import { PI_EVENT } from "./core/events.ts";
+
+// --- Constants: every local literal lives here. ---
 
 const STATE_KEY = Symbol.for("pi.remote-control.state.v1");
+const COMMAND_NAME = "remote-control";
+const COMMAND_DESCRIPTION = "Start, stop, or show the secure browser remote for this Pi session";
+const STATUS_KEY = "remote-control";
+const ACTION_START = "start";
+const ACTION_STOP = "stop";
+const ACTION_STATUS = "status";
+const ACTION_LOCAL = "local";
+const QUIT = "quit";
+const EVENT_SYNC = "sync";
+const EVENT_DELTA = "delta";
+const EVENT_TOOL = "tool";
+const UPDATE_TEXT_DELTA = "text_delta";
+const PHASE_START = "start";
+const PHASE_END = "end";
+const NOTE_INFO = "info";
+const NOTE_WARNING = "warning";
+const NOTE_ERROR = "error";
+const WIDGET_PLACEMENT = "aboveEditor";
+const PLATFORM_MACOS = "darwin";
+const CLIPBOARD_COMMAND = "pbcopy";
+const MODEL_NAME = "pi-session";
+const STATUS_ENABLED = "remote: on";
+const NOTE_STOPPED = "Remote control stopped";
+const NOTE_NOT_RUNNING = "Remote control is stopped";
+const NOTE_USAGE = "Usage: /remote-control [start|local|status|stop]";
 
 type Client = ServerResponse<IncomingMessage>;
 type Completion = {
@@ -115,7 +143,7 @@ function broadcast(type: string, data: unknown): void {
 }
 
 function sync(): void {
-  broadcast("sync", snapshot());
+  broadcast(EVENT_SYNC, snapshot());
 }
 
 function completionChunk(completion: Completion, delta: string, finishReason: string | null = null): string {
@@ -369,71 +397,71 @@ function pairingUrl(base: string): string {
 export default function remoteControl(pi: ExtensionAPI) {
   state.api = pi;
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
     state.ctx = ctx;
     state.busy = false;
     sync();
   });
-  pi.on("agent_start", async () => { state.busy = true; sync(); });
-  pi.on("agent_settled", async () => { state.busy = false; settleCompletions(); sync(); });
-  pi.on("message_update", async (event) => {
+  pi.on(PI_EVENT.AGENT_START, async () => { state.busy = true; sync(); });
+  pi.on(PI_EVENT.AGENT_SETTLED, async () => { state.busy = false; settleCompletions(); sync(); });
+  pi.on(PI_EVENT.MESSAGE_UPDATE, async (event) => {
     const update = event.assistantMessageEvent;
-    if (update.type === "text_delta") {
-      broadcast("delta", { delta: update.delta });
+    if (update.type === UPDATE_TEXT_DELTA) {
+      broadcast(EVENT_DELTA, { delta: update.delta });
       pushCompletionDelta(update.delta);
     }
   });
-  pi.on("message_end", async () => sync());
-  pi.on("tool_execution_start", async (event) => broadcast("tool", { phase: "start", name: event.toolName }));
-  pi.on("tool_execution_end", async (event) => { broadcast("tool", { phase: "end", name: event.toolName, error: event.isError }); sync(); });
-  pi.on("session_shutdown", async (event) => {
+  pi.on(PI_EVENT.MESSAGE_END, async () => sync());
+  pi.on(PI_EVENT.TOOL_EXECUTION_START, async (event) => broadcast(EVENT_TOOL, { phase: PHASE_START, name: event.toolName }));
+  pi.on(PI_EVENT.TOOL_EXECUTION_END, async (event) => { broadcast(EVENT_TOOL, { phase: PHASE_END, name: event.toolName, error: event.isError }); sync(); });
+  pi.on(PI_EVENT.SESSION_SHUTDOWN, async (event) => {
     state.ctx = undefined;
     state.busy = false;
-    if (event.reason === "quit") stop();
+    if (event.reason === QUIT) stop();
     else sync();
   });
 
-  pi.registerCommand("remote-control", {
-    description: "Start, stop, or show the secure browser remote for this Pi session",
+  pi.registerCommand(COMMAND_NAME, {
+    description: COMMAND_DESCRIPTION,
     handler: async (args, ctx) => {
-      const action = args.trim().toLowerCase() || "start";
-      if (action === "stop") {
+      const action = args.trim().toLowerCase() || ACTION_START;
+      if (action === ACTION_STOP) {
         stop();
-        ctx.ui.setStatus("remote-control", undefined);
-        ctx.ui.setWidget("remote-control", undefined);
-        ctx.ui.notify("Remote control stopped", "info");
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+        ctx.ui.setWidget(STATUS_KEY, undefined);
+        ctx.ui.notify(NOTE_STOPPED, NOTE_INFO);
         return;
       }
-      if (action === "status") {
-        if (!state.server || !state.port) ctx.ui.notify("Remote control is stopped", "info");
-        else ctx.ui.notify(`Remote control: ${state.publicUrl ?? `http://127.0.0.1:${state.port}`}`, "info");
+      if (action === ACTION_STATUS) {
+        if (!state.server || !state.port) ctx.ui.notify(NOTE_NOT_RUNNING, NOTE_INFO);
+        else ctx.ui.notify(`Remote control: ${state.publicUrl ?? `http://127.0.0.1:${state.port}`}`, NOTE_INFO);
         return;
       }
-      if (action !== "start" && action !== "local") {
-        ctx.ui.notify("Usage: /remote-control [start|local|status|stop]", "warning");
+      if (action !== ACTION_START && action !== ACTION_LOCAL) {
+        ctx.ui.notify(NOTE_USAGE, NOTE_WARNING);
         return;
       }
 
       try {
         const port = await startServer();
         let base = `http://127.0.0.1:${port}`;
-        if (action === "start") base = await startTunnel(port);
+        if (action === ACTION_START) base = await startTunnel(port);
         const url = pairingUrl(base);
-        ctx.ui.setStatus("remote-control", "remote: on");
-        ctx.ui.setWidget("remote-control", [
+        ctx.ui.setStatus(STATUS_KEY, STATUS_ENABLED);
+        ctx.ui.setWidget(STATUS_KEY, [
           "Pi remote control is active",
           url,
-          `OpenAI clients: base ${base}/v1 · model pi-session · API key ${state.token}`,
-          "Anyone with this link or API key can control Pi and its tools. Use /remote-control stop when done.",
-        ], { placement: "aboveEditor" });
-        if (process.platform === "darwin") {
-          const clipboard = spawn("pbcopy");
+          `OpenAI clients: base ${base}/v1 · model ${MODEL_NAME} · API key ${state.token}`,
+          `Anyone with this link or API key can control Pi and its tools. Use /${COMMAND_NAME} ${ACTION_STOP} when done.`,
+        ], { placement: WIDGET_PLACEMENT });
+        if (process.platform === PLATFORM_MACOS) {
+          const clipboard = spawn(CLIPBOARD_COMMAND);
           clipboard.stdin.end(url);
         }
-        ctx.ui.notify(action === "start" ? "Secure tunnel ready; pairing URL shown above and copied" : "Local remote ready; pairing URL shown above and copied", "info");
+        ctx.ui.notify(action === ACTION_START ? "Secure tunnel ready; pairing URL shown above and copied" : "Local remote ready; pairing URL shown above and copied", NOTE_INFO);
       } catch (error) {
         stop();
-        ctx.ui.notify(`Remote control failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+        ctx.ui.notify(`Remote control failed: ${error instanceof Error ? error.message : String(error)}`, NOTE_ERROR);
       }
     },
   });

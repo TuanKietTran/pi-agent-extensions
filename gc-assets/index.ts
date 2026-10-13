@@ -2,7 +2,7 @@ import v8 from "node:v8";
 import vm from "node:vm";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerReplay } from "./dev/replay.ts";
-import { WIDGET_KEY, formatBytes, publish } from "./panel.ts";
+import { WIDGET_KEY, formatBytes, publish, setPanelVisible } from "./panel.ts";
 import { ageDays, loadConfig, scan, state, sweep } from "./scanner.ts";
 
 import { PI_EVENT } from "../core/events.ts";
@@ -126,11 +126,13 @@ export default function gcAssets(pi: ExtensionAPI): void {
       }
 
       if (action === ACTION_HIDE) {
+        setPanelVisible(false);
         ctx.ui.setWidget(WIDGET_KEY, undefined);
         return;
       }
 
       if (action === ACTION_SHOW) {
+        setPanelVisible(true);
         await refresh(ctx);
         return;
       }

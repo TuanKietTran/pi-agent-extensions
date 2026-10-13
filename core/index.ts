@@ -9,8 +9,10 @@ import contextGuard from "./guards/context-guard.ts";
 import contextOptimize from "./guards/context-optimize.ts";
 import fileToolDiscipline from "./guards/file-tool-discipline.ts";
 import { registerReplay } from "./dev/replay.ts";
+import { JOB_EVENT_MESSAGE, registerJobEventRenderer } from "./job-event-ui.ts";
 import { prompt } from "./md.ts";
 import todo from "./todo.ts";
+import rightPanel from "./right-panel.ts";
 import { Supervisor, type JobEvent, type JobRecord, type KindConfig } from "./supervisor.ts";
 
 import { PI_EVENT } from "./events.ts";
@@ -32,6 +34,7 @@ const RULES_FILE = "rules.md";
 const CONTEXTS_FILE = "contexts.md";
 const COMMANDS_FILE = "commands.md";
 const JOB_RULES_HEADING = "job-rules";
+const RESPONSE_RULES_HEADING = "response-rules";
 const JOB_CONTEXT_HEADING = "job-context";
 const SLA_KEY = "sla_s";
 
@@ -124,7 +127,10 @@ function loadConfig(): CoreConfig {
 		string,
 		string[]
 	>;
-	return { rules: prompt(RULES_FILE, JOB_RULES_HEADING), contexts: prompt(CONTEXTS_FILE, JOB_CONTEXT_HEADING), commands, kinds, options };
+	return {
+		rules: [prompt(RULES_FILE, JOB_RULES_HEADING), prompt(RULES_FILE, RESPONSE_RULES_HEADING)].filter(Boolean).join("\n\n"),
+		contexts: prompt(CONTEXTS_FILE, JOB_CONTEXT_HEADING), commands, kinds, options,
+	};
 }
 
 export default function core(pi: ExtensionAPI) {
@@ -132,10 +138,16 @@ export default function core(pi: ExtensionAPI) {
 	answerFloor(pi);
 	contextOptimize(pi);
 	fileToolDiscipline(pi);
+	rightPanel(pi);
 	todo(pi);
 	registerReplay(pi);
+	registerJobEventRenderer(pi);
 	let cfg = loadConfig();
 	let sup: Supervisor | undefined;
+	// Supervisor callbacks can outlive a session (for example, when a job exits
+	// during a session switch or extension reload). Never let an old callback use
+	// the session-bound `pi` API after that session has been replaced.
+	let sessionGeneration = 0;
 	const allowIrreversible = allowIrreversibleJobs();
 
 	const text = (t: string, details: unknown = undefined) => ({ content: [{ type: "text" as const, text: t }], details });
@@ -143,18 +155,27 @@ export default function core(pi: ExtensionAPI) {
 	pi.on(PI_EVENT.SESSION_START, async (_e, ctx) => {
 		cfg = loadConfig();
 		sup?.shutdown();
-		sup = new Supervisor(
+		const generation = ++sessionGeneration;
+		let sessionSup: Supervisor;
+		sessionSup = new Supervisor(
 			cfg.kinds,
 			cfg.options,
 			{
 				onEvent: (ev: JobEvent) => {
+					if (generation !== sessionGeneration || sup !== sessionSup) return;
 					if (!STEER_STATES.has(ev.state)) return;
-					pi.sendUserMessage(JSON.stringify(ev), { deliverAs: "steer" });
+					pi.sendMessage(
+						{ customType: JOB_EVENT_MESSAGE, content: JSON.stringify(ev), display: true, details: ev },
+						{ triggerTurn: true, deliverAs: "steer" },
+					);
 				},
-				onPersist: (rec: JobRecord) => pi.appendEntry(ENTRY_TYPE, rec),
+				onPersist: (rec: JobRecord) => {
+					if (generation === sessionGeneration && sup === sessionSup) pi.appendEntry(ENTRY_TYPE, rec);
+				},
 			},
 			allowIrreversible,
 		);
+		sup = sessionSup;
 		const latest = new Map<string, JobRecord>();
 		for (const e of ctx.sessionManager.getBranch() as any[]) {
 			if (e.type === ENTRY_CUSTOM && e.customType === ENTRY_TYPE && e.data) latest.set(e.data.job_id, e.data);
@@ -164,7 +185,12 @@ export default function core(pi: ExtensionAPI) {
 	});
 
 	pi.on(PI_EVENT.SESSION_SHUTDOWN, async () => {
-		sup?.shutdown();
+		// Invalidate callbacks before stopping the supervisor: shutdown can race
+		// with child-process events and those callbacks must not touch stale `pi`.
+		++sessionGeneration;
+		const oldSup = sup;
+		sup = undefined;
+		oldSup?.shutdown();
 	});
 
 	// Re-read the markdown on every run: edits apply immediately, no reload command or tool call.

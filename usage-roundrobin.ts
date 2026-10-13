@@ -21,6 +21,9 @@ import os from "node:os";
 import path from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { PI_EVENT } from "./core/events.ts";
+
+// --- Constants: every local literal lives here. ---
 
 // os.homedir() prefers $HOME, which a tmux server that outlived its shell can
 // leave stale. Same reasoning as touchbar-usage/src/usage.mjs.
@@ -36,6 +39,26 @@ const STATE_PATH = path.join(HOME, ".pi", "usage-roundrobin.json");
 const SETTINGS_PATH = path.join(HOME, ".pi", "agent", "settings.json");
 const AUTO_PROVIDER = "auto-rotate";
 const AUTO_MODEL = "auto-rotate";
+const AUTO_NAME = "Auto Rotate";
+const AUTO_BASE_URL = "http://127.0.0.1:1/v1";
+const AUTO_API = "openai-completions";
+const AUTO_API_KEY = "not-used";
+const STATUS_KEY = "usage-roundrobin";
+const STATUS_DISABLED = "RR off";
+const TONE_DIM = "dim";
+const TONE_WARNING = "warning";
+const TONE_INFO = "info";
+const TONE_ERROR = "error";
+const COMMAND_NAME = "roundrobin";
+const COMMAND_DESCRIPTION = "Round-robin models across 5h usage windows (status|on|off|now|models|set|reset)";
+const ACTION_STATUS = "status";
+const ACTION_ON = "on";
+const ACTION_OFF = "off";
+const ACTION_NOW = "now";
+const ACTION_MODELS = "models";
+const ACTION_SET = "set";
+const ACTION_RESET = "reset";
+const WIDGET_PLACEMENT = "aboveEditor";
 const WINDOW_MS = 5 * 60 * 60 * 1000;
 const PROVIDER_COOLDOWN_MS = 5 * 60 * 1000;
 const MIN_VELOCITY_SAMPLE_MS = 90_000;
@@ -474,7 +497,7 @@ function poolSummary(scored: Scored[]): string {
 function updateStatus(ctx: ExtensionContext, state: PersistedState, decision: Decision | null): void {
   if (!ctx.hasUI) return;
   if (!state.config.enabled) {
-    ctx.ui.setStatus("usage-roundrobin", ctx.ui.theme.fg("dim", "RR off"));
+    ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(TONE_DIM, STATUS_DISABLED));
     return;
   }
   const name = decision?.chosen ? short(decision.chosen.model) : "—";
@@ -482,7 +505,7 @@ function updateStatus(ctx: ExtensionContext, state: PersistedState, decision: De
   const pools = decision ? poolSummary(decision.scored) : "";
   const line = `RR ${name} ${quantum}${pools ? ` ${pools}` : ""}`;
   const strained = decision?.chosen ? decision.chosen.spare < 0.15 : false;
-  ctx.ui.setStatus("usage-roundrobin", ctx.ui.theme.fg(strained ? "warning" : "dim", line));
+  ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(strained ? TONE_WARNING : TONE_DIM, line));
 }
 
 // ------------------------------------------------------------------ extension
@@ -491,13 +514,13 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
   // A synthetic picker entry: selecting it immediately resolves to a real model,
   // so its placeholder endpoint is never used for a provider request.
   pi.registerProvider(AUTO_PROVIDER, {
-    name: "Auto Rotate",
-    baseUrl: "http://127.0.0.1:1/v1",
-    api: "openai-completions",
-    apiKey: "not-used",
+    name: AUTO_NAME,
+    baseUrl: AUTO_BASE_URL,
+    api: AUTO_API,
+    apiKey: AUTO_API_KEY,
     models: [{
       id: AUTO_MODEL,
-      name: "Auto Rotate",
+      name: AUTO_NAME,
       reasoning: true,
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -596,7 +619,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     return resolved;
   }
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
     // Pi has already restored the session/default model at this point. Adopt it
     // as the active slot before scheduling; otherwise a stale ledger quantum can
     // immediately replace the user's last pick during /reload or a new session.
@@ -615,11 +638,11 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
 
   // Decide before the run starts: this is the only point where a switch is both
   // safe (no in-flight request) and still affects the upcoming turn.
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.BEFORE_AGENT_START, async (_event, ctx) => {
     await reschedule(ctx);
   });
 
-  pi.on("message_end", (event, ctx) => {
+  pi.on(PI_EVENT.MESSAGE_END, (event, ctx) => {
     if (event.message.role !== "assistant") return;
     const usage = event.message.usage;
     if (!usage) return;
@@ -644,7 +667,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
   // The model picker doubles as the mode picker. "Auto Rotate" enables managed
   // selection; choosing any real model disables it and leaves that model fixed.
   // Internal rotation/failover keeps `applying` set and cannot alter the mode/default.
-  pi.on("model_select", async (event, ctx) => {
+  pi.on(PI_EVENT.MODEL_SELECT, async (event, ctx) => {
     if (applying || event.source === "restore") return;
     const auto = event.model.provider === AUTO_PROVIDER && event.model.id === AUTO_MODEL;
     persistDefaultModel(event.model);
@@ -690,12 +713,12 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     }
   }
 
-  pi.on("after_provider_response", async (event, ctx) => {
+  pi.on(PI_EVENT.AFTER_PROVIDER_RESPONSE, async (event, ctx) => {
     if (event.status !== 429 || !ctx.model) return;
     await failOver(ctx.model.provider, ctx, parseRetryAfter(event.headers["retry-after"]));
   });
 
-  pi.on("message_end", async (event, ctx) => {
+  pi.on(PI_EVENT.MESSAGE_END, async (event, ctx) => {
     const message = event.message;
     if (message.role !== "assistant" || message.stopReason !== "error") return;
     const error = message.errorMessage ?? "";
@@ -708,23 +731,23 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
     await failOver(provider, ctx);
   });
 
-  pi.registerCommand("roundrobin", {
-    description: "Round-robin models across 5h usage windows (status|on|off|now|models|set|reset)",
+  pi.registerCommand(COMMAND_NAME, {
+    description: COMMAND_DESCRIPTION,
     handler: async (args, ctx) => {
-      const [action = "status", ...rest] = args.trim().split(/\s+/).filter(Boolean);
+      const [action = ACTION_STATUS, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 
-      if (action === "on" || action === "off") {
-        const enabled = action === "on";
+      if (action === ACTION_ON || action === ACTION_OFF) {
+        const enabled = action === ACTION_ON;
         mutate((draft) => {
           draft.config.enabled = enabled;
         });
         if (enabled) await reschedule(ctx, true);
-        else ctx.ui.setStatus("usage-roundrobin", ctx.ui.theme.fg("dim", "RR off"));
-        ctx.ui.notify(`usage-roundrobin ${enabled ? "enabled" : "disabled"}`, "info");
+        else ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(TONE_DIM, STATUS_DISABLED));
+        ctx.ui.notify(`${STATUS_KEY} ${enabled ? "enabled" : "disabled"}`, TONE_INFO);
         return;
       }
 
-      if (action === "reset") {
+      if (action === ACTION_RESET) {
         mutate((draft) => {
           draft.charged = {};
           draft.tokens = {};
@@ -738,7 +761,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
         return;
       }
 
-      if (action === "models") {
+      if (action === ACTION_MODELS) {
         mutate((draft) => {
           draft.config.models = rest;
         });
@@ -750,7 +773,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
         return;
       }
 
-      if (action === "set") {
+      if (action === ACTION_SET) {
         const [field, raw] = rest;
         const value = Number(raw);
         const allowed = ["quantumTokens", "hardCap", "paygBudgetUsd"] as const;
@@ -765,7 +788,7 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
         return;
       }
 
-      if (action !== "status" && action !== "now") {
+      if (action !== ACTION_STATUS && action !== ACTION_NOW) {
         ctx.ui.notify("Usage: /roundrobin [status|on|off|now|models <patterns>|set <key> <n>|reset]", "warning");
         return;
       }
@@ -803,13 +826,13 @@ export default function usageRoundRobin(pi: ExtensionAPI) {
         });
 
       ctx.ui.setWidget(
-        "usage-roundrobin",
+        STATUS_KEY,
         [
           `quantum ${Math.round(state.chargedSinceSwitch / 1000)}k/${Math.round(state.config.quantumTokens / 1000)}k · cap ${Math.round(state.config.hardCap * 100)}%`,
           ...rows,
           decision.note ? `note: ${decision.note}` : `ledger: ${STATE_PATH}`,
         ],
-        { placement: "aboveEditor" },
+        { placement: WIDGET_PLACEMENT },
       );
     },
   });

@@ -1,5 +1,6 @@
 import v8 from "node:v8";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getRightPanel } from "../core/right-panel.ts";
 import { ageDays, state } from "./scanner.ts";
 
 // --- Constants: every local literal lives here. ---
@@ -16,6 +17,9 @@ const TONE_SUCCESS = "success";
 const TONE_DIM = "dim";
 const TONE_ACCENT = "accent";
 const TITLE = "Memory & Assets";
+const TAB_ID = "memory";
+const TAB_LABEL = "Memory";
+const TAB_ORDER = 1;
 const TRUNCATED_MARK = "+";
 const LABEL_WIDTH = 11;
 const SIZE_WIDTH = 5;
@@ -81,10 +85,32 @@ function panel(ctx: ExtensionContext): string[] {
   return lines;
 }
 
+let panelContext: ExtensionContext | undefined;
+let unregisterPanel: (() => void) | undefined;
+let panelVisible = true;
+
+export function setPanelVisible(visible: boolean): void {
+  panelVisible = visible;
+  if (!visible) {
+    unregisterPanel?.();
+    unregisterPanel = undefined;
+  } else if (panelContext) {
+    publish(panelContext);
+  }
+}
+
 export function publish(ctx: ExtensionContext | undefined): void {
   if (!ctx) return;
+  panelContext = ctx;
+  if (panelVisible) unregisterPanel ??= getRightPanel().registerTab({
+    id: TAB_ID,
+    label: TAB_LABEL,
+    order: TAB_ORDER,
+    lines: () => (panelContext ? panel(panelContext) : []),
+  });
   try {
-    ctx.ui.setWidget(WIDGET_KEY, panel(ctx), { placement: PLACEMENT });
+    // The right-panel tab owns this content; keep the widget mounted there instead.
+    ctx.ui.setWidget(WIDGET_KEY, undefined);
   } catch {
     // The context goes stale across session replacement; the next event refreshes it.
   }

@@ -8,7 +8,7 @@ This directory owns local modifications to Pi's built-in terminal layout.
 
 1. **Topmost:** Pi's **Tools**, **Running**, and **Pending chats** block.
 2. **Middle:** extension widgets mounted with `ctx.ui.setWidget(..., { placement: "aboveEditor" })`. This region receives the flexible height.
-3. **Bottommost:** widgets mounted with `placement: "belowEditor"`, followed by extension statuses and Pi's footer.
+3. **Bottommost:** widgets mounted with `placement: "belowEditor"`, then extension statuses, pending chat messages, and Pi's footer. Pending messages stay in the right panel instead of the chat column.
 
 The editor remains in the main chat column. Extensions should use `setWidget` and `setStatus` rather than reaching into Pi's viewport internals; the layout patch decides where those standard mounts render.
 
