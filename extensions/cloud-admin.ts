@@ -16,6 +16,9 @@ import {
   type Focusable,
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { PI_EVENT } from "./pi-events.ts";
+
+// --- Constants: every local literal lives here. ---
 
 const CLOUDFLARE_BASE = "https://api.cloudflare.com/client/v4";
 const TAILSCALE_BASE = "https://api.tailscale.com/api/v2";
@@ -24,6 +27,15 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const SENSITIVE_KEY = /(^|_)(authorization|cookie|password|secret|token|api[_-]?key|key)($|_)/i;
 const KEYCHAIN_ACCOUNT = userInfo().username;
 const KEYCHAIN_SERVICE_PREFIX = "pi-cloud-admin";
+const PROVIDER_CLOUDFLARE = "cloudflare";
+const PROVIDER_TAILSCALE = "tailscale";
+const PROVIDERS = [PROVIDER_CLOUDFLARE, PROVIDER_TAILSCALE] as const;
+const COMMAND_LOGIN = "cloud-admin-login";
+const COMMAND_LOGIN_DESCRIPTION = "Load admin credentials; verified Cloudflare tokens are saved in macOS Login Keychain";
+const COMMAND_LOGOUT = "cloud-admin-logout";
+const COMMAND_LOGOUT_DESCRIPTION = "Erase session-scoped Cloudflare and Tailscale credentials";
+const COMMAND_STATUS = "cloud-admin-status";
+const COMMAND_STATUS_DESCRIPTION = "Show session login status without revealing credentials";
 
 type Provider = "cloudflare" | "tailscale";
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -350,10 +362,10 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     ctx.ui.notify("Tailscale credentials loaded for this session", "info");
   };
 
-  pi.registerCommand("cloud-admin-login", {
-    description: "Load admin credentials; verified Cloudflare tokens are saved in macOS Login Keychain",
+  pi.registerCommand(COMMAND_LOGIN, {
+    description: COMMAND_LOGIN_DESCRIPTION,
     getArgumentCompletions: (prefix) =>
-      (["cloudflare", "tailscale"] as const)
+      PROVIDERS
         .filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value })),
     handler: async (args, ctx) => {
@@ -369,8 +381,8 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("cloud-admin-logout", {
-    description: "Erase session-scoped Cloudflare and Tailscale credentials",
+  pi.registerCommand(COMMAND_LOGOUT, {
+    description: COMMAND_LOGOUT_DESCRIPTION,
     handler: async (args, ctx) => {
       const provider = args.trim().toLowerCase();
       if (!provider || provider === "all") {
@@ -392,8 +404,8 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("cloud-admin-status", {
-    description: "Show session login status without revealing credentials",
+  pi.registerCommand(COMMAND_STATUS, {
+    description: COMMAND_STATUS_DESCRIPTION,
     handler: async (_args, ctx) => {
       const describe = (provider: Provider) => {
         const credential = credentialFor(provider);
@@ -455,7 +467,7 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
   registerApiTool("cloudflare");
   registerApiTool("tailscale");
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
     const cfToken = process.env.CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
     const tsToken = process.env.TAILSCALE_API_KEY || process.env.TS_API_KEY;
     if (cfToken) cloudflare = { authorization: `Bearer ${cfToken}`, source: "environment" };
@@ -484,7 +496,7 @@ export default function cloudAdminExtension(pi: ExtensionAPI) {
     updateStatus(ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on(PI_EVENT.SESSION_SHUTDOWN, async () => {
     cloudflare = undefined;
     tailscale = undefined;
   });
