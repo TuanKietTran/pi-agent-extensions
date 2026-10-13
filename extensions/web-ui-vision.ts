@@ -4,6 +4,9 @@ import { Type } from "typebox";
 import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { chromium, type Browser, type Download, type Locator, type Page } from "playwright-core";
+import { PI_EVENT } from "./pi-events.ts";
+
+// --- Constants: every local literal lives here. ---
 
 // Always use a private headless browser. Attaching via CDP or launching a
 // visible window can select/focus the user's browser and interrupt their input.
@@ -11,6 +14,8 @@ const START_URL = process.env.PI_WEB_UI_URL?.trim() || "about:blank";
 const ACTION_TIMEOUT = positiveInt(process.env.PI_WEB_UI_TIMEOUT_MS, 15_000);
 const MAX_ELEMENTS = positiveInt(process.env.PI_WEB_UI_MAX_ELEMENTS, 200);
 const MAX_SNAPSHOT_BYTES = 32 * 1024;
+const COMMAND_NAME = "web-ui";
+const COMMAND_DESCRIPTION = "Show web UI control status (usage: /web-ui [open URL])";
 
 type DownloadArtifact = {
   suggestedFilename: string;
@@ -316,8 +321,8 @@ export default function webUiVision(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("web-ui", {
-    description: "Show web UI control status (usage: /web-ui [open URL])",
+  pi.registerCommand(COMMAND_NAME, {
+    description: COMMAND_DESCRIPTION,
     handler: async (args, ctx) => {
       try {
         const match = args.trim().match(/^open\s+(.+)$/);
@@ -330,7 +335,7 @@ export default function webUiVision(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
     if (!process.env.PI_WEB_UI_EXECUTABLE_PATH) return;
     try {
       await ensureBrowser();
@@ -340,7 +345,7 @@ export default function webUiVision(pi: ExtensionAPI) {
     }
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on(PI_EVENT.SESSION_SHUTDOWN, async () => {
     if (ownsBrowser && browser?.isConnected()) await browser.close().catch(() => undefined);
     browser = undefined;
     activePage = undefined;
