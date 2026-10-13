@@ -27,11 +27,33 @@ import type {
   ToolCall,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
-import {
-  createAssistantMessageEventStream,
-  getCurrentSystemPrompt,
-  getCurrentTools,
-} from "@earendil-works/pi-ai";
+import * as piAi from "@earendil-works/pi-ai";
+
+const { createAssistantMessageEventStream } = piAi;
+
+// Newer pi-ai versions carry the prompt/tools on system messages and expose
+// helpers to read them; older versions use context.systemPrompt/context.tools.
+const piAiCompat = piAi as unknown as {
+  getCurrentSystemPrompt?: (messages: Message[]) => string | undefined;
+  getCurrentTools?: (messages: Message[]) => Tool[];
+};
+
+function getCurrentTools(context: { messages: Message[]; tools?: Tool[] }): Tool[] {
+  if (typeof piAiCompat.getCurrentTools === "function") {
+    return piAiCompat.getCurrentTools(context.messages) ?? [];
+  }
+  return context.tools ?? [];
+}
+
+function getCurrentSystemPrompt(context: {
+  messages: Message[];
+  systemPrompt?: string;
+}): string | undefined {
+  if (typeof piAiCompat.getCurrentSystemPrompt === "function") {
+    return piAiCompat.getCurrentSystemPrompt(context.messages);
+  }
+  return context.systemPrompt;
+}
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClaudeStreamInput } from "./media.ts";
 import { startMcpServer, type McpHandle } from "./mcp.ts";
@@ -212,8 +234,8 @@ function streamClaudeCLI(
     try {
       // Providers receive a normalized transcript: prompt and active tool
       // declarations live on system messages rather than context fields.
-      const tools = getCurrentTools(context.messages);
-      const systemPrompt = getCurrentSystemPrompt(context.messages);
+      const tools = getCurrentTools(context);
+      const systemPrompt = getCurrentSystemPrompt(context);
       const capturedCalls: ToolCall[] = [];
       if (tools.length > 0) {
         mcp = await startMcpServer(
