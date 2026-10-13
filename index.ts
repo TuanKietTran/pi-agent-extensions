@@ -35,6 +35,7 @@ import {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClaudeStreamInput } from "./media.ts";
 import { startMcpServer, type McpHandle } from "./mcp.ts";
+import { RESPONSE_POLICY, TEXT_OUTPUT_SCHEMA } from "./response-policy.ts";
 
 function resolveClaudeBin(): string {
   const candidates = [
@@ -48,7 +49,11 @@ function resolveClaudeBin(): string {
   return "claude"; // fall back to PATH lookup
 }
 
+// --- Constants: every local literal lives here. ---
+
 const CLAUDE_BIN = resolveClaudeBin();
+const MEMORY_COMMAND = "memory";
+const MEMORY_DESCRIPTION = "Add a memory line (/memory <text>) or edit CLAUDE.md memory files";
 
 function contentText(content: Message["content"]): string {
   if (typeof content === "string") return content;
@@ -100,7 +105,7 @@ function createOutputSchema(tools: Tool[]): Record<string, unknown> {
   return {
     type: "object",
     properties: {
-      text: { type: "string" },
+      text: TEXT_OUTPUT_SCHEMA,
       tool_calls: {
         type: "array",
         items: toolCallItems,
@@ -250,7 +255,7 @@ function streamClaudeCLI(
       }
       // Keep bridge instructions last so old conversation text and Claude Code's
       // disabled native-tool state cannot override the host-tool protocol.
-      appendParts.push(createToolBridgePrompt(tools));
+      appendParts.push(createToolBridgePrompt(tools), RESPONSE_POLICY);
 
       const args = [
         "-p",
@@ -427,8 +432,8 @@ function registerCliCommands(pi: ExtensionAPI): void {
   // /memory — view/edit Claude's memory (CLAUDE.md). With text, quick-adds a
   // bullet to the project file (like Claude Code's `#` shortcut); with no args,
   // opens a chosen memory file in the editor and saves edits back.
-  pi.registerCommand("memory", {
-    description: "Add a memory line (/memory <text>) or edit CLAUDE.md memory files",
+  pi.registerCommand(MEMORY_COMMAND, {
+    description: MEMORY_DESCRIPTION,
     handler: async (args, ctx) => {
       const projectMem = join(ctx.cwd, "CLAUDE.md");
       const userMem = join(homedir(), ".claude", "CLAUDE.md");

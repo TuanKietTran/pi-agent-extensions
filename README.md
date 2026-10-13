@@ -40,6 +40,12 @@ Pi remains responsible for tools:
 
 This means Pi options such as `--tools write` and `--exclude-tools bash` are respected by the `claude-cli` provider. A recent Claude CLI with `--json-schema`, `--setting-sources`, and streamable HTTP MCP support is required.
 
+## Response behavior
+
+The provider appends direct, concise response rules after conversation history and reinforces them in the structured `text` field. Routine tool requests should use empty text. Replies omit conversational filler and unsolicited suggestions; requested detail, blockers, verification, and required confirmations remain intact. The shared `core` extension applies the same defaults to all models through `core/rules.md`.
+
+This is prompt guidance, not a hard character/token cap or text filter. Reload Pi after provider code changes; core response-rule wording is re-read each run once its loader is active.
+
 ## Acknowledgements
 
 Initial version vibe coded with [Claude Code](https://claude.ai/code).
