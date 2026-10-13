@@ -13,7 +13,6 @@
   },
   "pi": {
     "extensions": [
-      "./tui/index.ts",
       "./gc-assets/index.ts",
       "./thinking-control.ts",
       "./usage-roundrobin.ts",
