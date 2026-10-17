@@ -2,6 +2,7 @@ export type Option = {
   id: string
   title: string
   summary: string
+  fallback: string
   cost: string
   risk: string
   reversibility: string
@@ -13,14 +14,14 @@ export type Briefing = {
   situation: string
   options: Option[]
   recommendation: { option_id: string; rationale: string }
-  open_questions: string[]
+  selection_guidance: string
+  assumptions: string[]
 }
 
 export type Status =
   | { kind: 'idle' }
   | { kind: 'thinking'; task: string }
-  | { kind: 'ready' }
-  | { kind: 'sent'; option: string; reply: string }
+  | { kind: 'sent'; reply: string }
   | { kind: 'error'; message: string }
 
 declare module 'claude-code' {

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Executive options briefing for System 1 (the orchestrator).
+"""Autonomous options briefing for System 1 (the orchestrator).
 
-Claude plays the chief of staff: it reasons at xhigh effort over a decision and
+Claude plays the chief of staff: it reasons at xhigh effort over a task and
 returns a board-style briefing (3-4 genuinely different options, trade-offs, a
-recommendation). `send` then posts the briefing, plus the chosen option, to the
-System 1 API.
+recommendation, the assumptions it made, and a rule for choosing). The briefing
+is then posted to the System 1 API, which picks and runs on its own. Nobody is
+asked anything in between.
 
-    system1_client.py options "task or decision" [--context FILE] [--send] [--choose ID]
+    system1_client.py options "task" [--context FILE] [--no-send] [--json] [--dry-run]
     system1_client.py send briefing.json [--choose ID] [--dry-run]
 
 Env: ANTHROPIC_API_KEY (or `ant auth login`), SYSTEM1_API_URL, SYSTEM1_API_KEY (optional).
@@ -27,18 +28,21 @@ EFFORT = "xhigh"
 
 SYSTEM = """\
 You are the chief of staff to System 1, an orchestrator that coordinates agents and tools. \
-System 1 acts on whatever it is told, so your job is to put a real decision in front of it \
-the way a C-level executive briefs a board: the decision, the options, the trade-offs, a \
-recommendation.
+System 1 acts on whatever it is told, and it runs unattended: no human will answer a question \
+once it starts. Your job is to hand it a real decision the way a C-level executive briefs a \
+board: the decision, the options, the trade-offs, a recommendation, and a rule for choosing.
 
 - Offer 3 or 4 options that differ in strategy (scope, sequencing, build vs buy, depth vs \
 speed), not in wording. One may be the minimal/do-less option.
 - State cost, time to first value, risk and reversibility for each, in terms a manager can \
 compare at a glance. Say which downside would hurt most, not every downside.
-- Recommend exactly one option and justify it against the others in two or three sentences.
-- List only the open questions whose answers would change the recommendation.
 - Be concrete about what System 1 would actually do under each option: the agents or tools \
-it would start and the order.
+it would start and the order, and what it falls back to if a step fails.
+- Resolve ambiguity yourself. Where the task leaves something open, pick the most reasonable \
+reading and record it as an assumption. Never hand System 1 a question for a human.
+- Recommend exactly one option and justify it against the others in two or three sentences.
+- Give selection guidance: the rule System 1 should apply to choose among the options on its \
+own, including when to prefer a different option than the recommended one.
 """
 
 LEVELS = ["low", "medium", "high"]
@@ -48,6 +52,7 @@ BRIEFING_SCHEMA = {
     "properties": {
         "decision": {"type": "string"},
         "situation": {"type": "string"},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
         "options": {
             "type": "array",
             "items": {
@@ -57,6 +62,7 @@ BRIEFING_SCHEMA = {
                     "title": {"type": "string"},
                     "summary": {"type": "string"},
                     "system1_plan": {"type": "array", "items": {"type": "string"}},
+                    "fallback": {"type": "string"},
                     "cost": {"type": "string", "enum": LEVELS},
                     "time_to_value": {"type": "string"},
                     "risk": {"type": "string", "enum": LEVELS},
@@ -65,8 +71,8 @@ BRIEFING_SCHEMA = {
                     "downsides": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": [
-                    "id", "title", "summary", "system1_plan", "cost", "time_to_value",
-                    "risk", "reversibility", "upsides", "downsides",
+                    "id", "title", "summary", "system1_plan", "fallback", "cost",
+                    "time_to_value", "risk", "reversibility", "upsides", "downsides",
                 ],
                 "additionalProperties": False,
             },
@@ -77,11 +83,17 @@ BRIEFING_SCHEMA = {
             "required": ["option_id", "rationale"],
             "additionalProperties": False,
         },
-        "open_questions": {"type": "array", "items": {"type": "string"}},
+        "selection_guidance": {"type": "string"},
     },
-    "required": ["decision", "situation", "options", "recommendation", "open_questions"],
+    "required": [
+        "decision", "situation", "assumptions", "options", "recommendation", "selection_guidance",
+    ],
     "additionalProperties": False,
 }
+
+
+class SendError(Exception):
+    pass
 
 
 def generate_briefing(task: str, context: str = "") -> dict:
@@ -123,32 +135,40 @@ def generate_briefing(task: str, context: str = "") -> dict:
     return briefing
 
 
-def send_to_system1(briefing: dict, chosen: str | None, dry_run: bool = False) -> str:
-    ids = {o["id"] for o in briefing["options"]}
-    chosen = chosen or briefing["recommendation"]["option_id"]
-    if chosen not in ids:
-        sys.exit(f"Unknown option id {chosen!r}; choose one of {sorted(ids)}.")
+def build_payload(briefing: dict, chosen: str | None) -> dict:
+    payload = {
+        "type": "decision_options",
+        "mode": "autonomous",
+        "briefing": briefing,
+        "recommended_option_id": briefing["recommendation"]["option_id"],
+    }
+    if chosen:
+        if chosen not in {o["id"] for o in briefing["options"]}:
+            raise SendError(f"Unknown option id {chosen!r}.")
+        payload["chosen_option_id"] = chosen
+    return payload
 
-    payload = {"type": "decision_options", "briefing": briefing, "chosen_option_id": chosen}
-    body = json.dumps(payload).encode()
+
+def send_to_system1(briefing: dict, chosen: str | None = None, dry_run: bool = False) -> str:
+    payload = build_payload(briefing, chosen)
     if dry_run:
         return json.dumps(payload, indent=2)
 
     url = os.environ.get("SYSTEM1_API_URL")
     if not url:
-        sys.exit("Set SYSTEM1_API_URL to the System 1 endpoint (or pass --dry-run).")
+        raise SendError("SYSTEM1_API_URL is not set.")
     headers = {"Content-Type": "application/json"}
     if key := os.environ.get("SYSTEM1_API_KEY"):
         headers["Authorization"] = f"Bearer {key}"
 
-    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return response.read().decode()
     except urllib.error.HTTPError as e:
-        sys.exit(f"System 1 returned HTTP {e.code}: {e.read().decode(errors='replace')}")
+        raise SendError(f"System 1 returned HTTP {e.code}: {e.read().decode(errors='replace')}")
     except urllib.error.URLError as e:
-        sys.exit(f"Could not reach System 1 at {url}: {e.reason}")
+        raise SendError(f"Could not reach System 1 at {url}: {e.reason}")
 
 
 def render(briefing: dict) -> str:
@@ -163,11 +183,13 @@ def render(briefing: dict) -> str:
             f"time to value: {o['time_to_value']}",
             f"    + {'; '.join(o['upsides'])}",
             f"    - {'; '.join(o['downsides'])}",
+            f"    fallback: {o['fallback']}",
             "",
         ]
     lines.append(f"RECOMMENDATION: {rec}. {briefing['recommendation']['rationale']}")
-    if briefing["open_questions"]:
-        lines += ["", "OPEN QUESTIONS:"] + [f"  ? {q}" for q in briefing["open_questions"]]
+    lines.append(f"SELECTION GUIDANCE: {briefing['selection_guidance']}")
+    if briefing["assumptions"]:
+        lines += ["", "ASSUMPTIONS:"] + [f"  * {a}" for a in briefing["assumptions"]]
     return "\n".join(lines)
 
 
@@ -175,31 +197,46 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    opts = sub.add_parser("options", help="generate an options briefing")
+    opts = sub.add_parser("options", help="generate a briefing and send it to System 1")
     opts.add_argument("task")
     opts.add_argument("--context", help="file with background to include")
-    opts.add_argument("--json", action="store_true", help="print the briefing as JSON")
-    opts.add_argument("--send", action="store_true", help="post the briefing to System 1")
-    opts.add_argument("--choose", help="option id to send (default: the recommendation)")
-    opts.add_argument("--dry-run", action="store_true", help="with --send: print the payload")
+    opts.add_argument("--json", action="store_true", help="print {briefing, system1_response, error} as JSON")
+    opts.add_argument("--no-send", action="store_true", help="only generate; do not post to System 1")
+    opts.add_argument("--dry-run", action="store_true", help="print the payload instead of posting")
 
     snd = sub.add_parser("send", help="post a saved briefing JSON to System 1")
     snd.add_argument("briefing", help="path to a briefing JSON file ('-' for stdin)")
-    snd.add_argument("--choose")
+    snd.add_argument("--choose", help="force System 1 to use this option id")
     snd.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
 
-    if args.cmd == "options":
-        context = open(args.context).read() if args.context else ""
-        briefing = generate_briefing(args.task, context)
-        print(json.dumps(briefing, indent=2) if args.json else render(briefing))
-        if args.send:
-            print("\n--- System 1 response ---", file=sys.stderr)
-            print(send_to_system1(briefing, args.choose, args.dry_run))
-    else:
+    if args.cmd == "send":
         raw = sys.stdin.read() if args.briefing == "-" else open(args.briefing).read()
-        print(send_to_system1(json.loads(raw), args.choose, args.dry_run))
+        try:
+            print(send_to_system1(json.loads(raw), args.choose, args.dry_run))
+        except SendError as e:
+            sys.exit(str(e))
+        return
+
+    context = open(args.context).read() if args.context else ""
+    briefing = generate_briefing(args.task, context)
+    reply, error = None, None
+    if not args.no_send:
+        try:
+            reply = send_to_system1(briefing, None, args.dry_run)
+        except SendError as e:
+            error = str(e)
+
+    if args.json:
+        print(json.dumps({"briefing": briefing, "system1_response": reply, "error": error}))
+    else:
+        print(render(briefing))
+        if reply is not None:
+            print("\n--- System 1 response ---\n" + reply)
+        if error:
+            print(f"\nNOT SENT: {error}", file=sys.stderr)
+    sys.exit(1 if error else 0)
 
 
 if __name__ == "__main__":
