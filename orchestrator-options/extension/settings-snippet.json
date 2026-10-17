@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 orchestrator-options/client/system1_client.py options:*)"
+    ],
+    "ask": [
+      "Bash(python3 orchestrator-options/client/system1_client.py send:*)"
+    ]
+  },
+  "env": {
+    "SYSTEM1_API_URL": "https://REPLACE-WITH-SYSTEM1-ENDPOINT"
+  }
+}
