@@ -4,7 +4,12 @@ import type { Register } from 'claude-code'
 import type { Briefing, Status } from '../types'
 
 const PANE = 'system1-options'
-const CLIENT = 'orchestrator-options/client/system1_client.py'
+// Override with SYSTEM1_CLIENT (absolute path) and SYSTEM1_PYTHON when the relative path or `python3` is wrong
+// for the machine: on Windows `python3` is usually the Store stub. Read defensively, so a runtime without
+// `process` still falls back to the original values. Not loaded or tested in Claude Code yet.
+const env = (globalThis as { process?: { env?: Record<string, string | undefined>; platform?: string } }).process
+const CLIENT = env?.env?.SYSTEM1_CLIENT ?? 'orchestrator-options/client/system1_client.py'
+const PYTHON = env?.env?.SYSTEM1_PYTHON ?? (env?.platform === 'win32' ? 'python' : 'python3')
 const TEN_MINUTES = 600_000
 
 type ClientOutput = {
@@ -37,7 +42,7 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'System 1 options' })
 
     void $.process
-      .run(['python3', CLIENT, 'options', task, '--json'], { timeoutMs: TEN_MINUTES })
+      .run([PYTHON, CLIENT, 'options', task, '--json'], { timeoutMs: TEN_MINUTES })
       .then(async ran => {
         let out: ClientOutput | null = null
         try {
