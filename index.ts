@@ -11,9 +11,9 @@
  */
 
 import { spawn } from "child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import type {
   Api,
@@ -279,6 +279,13 @@ function streamClaudeCLI(
       // disabled native-tool state cannot override the host-tool protocol.
       appendParts.push(createToolBridgePrompt(tools), RESPONSE_POLICY);
 
+      // Windows rejects command lines over ~32K characters (ENAMETOOLONG from uv_spawn). The appended
+      // system prompt carries the whole conversation history and grows every turn, so it travels in a
+      // temporary file instead of an argument.
+      const appendDir = mkdtempSync(join(tmpdir(), "pi-claude-cli-"));
+      const appendFile = join(appendDir, "append-system-prompt.md");
+      writeFileSync(appendFile, appendParts.join("\n\n"), "utf8");
+
       const args = [
         "-p",
         "--input-format", "stream-json",
@@ -297,13 +304,18 @@ function streamClaudeCLI(
         ...(mcp ? ["--allowedTools", ...mcp.allowedTools] : []),
         "--no-session-persistence",
         "--json-schema", JSON.stringify(createOutputSchema(tools)),
-        "--append-system-prompt", appendParts.join("\n\n"),
+        "--append-system-prompt-file", appendFile,
       ];
       if (options?.reasoning) {
         args.push("--effort", options.reasoning === "minimal" ? "low" : options.reasoning);
       }
 
       const proc = spawn(CLAUDE_BIN, args, { env: { ...process.env } });
+      const removeAppendFile = () => {
+        try { rmSync(appendDir, { recursive: true, force: true }); } catch { /* best effort */ }
+      };
+      proc.on("close", removeAppendFile);
+      proc.on("error", removeAppendFile);
       proc.stdin.end(createClaudeStreamInput(lastMsg, prompt));
 
       stream.push({ type: "start", partial: output });
