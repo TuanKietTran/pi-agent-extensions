@@ -24,7 +24,7 @@ const LABEL_BY_STATE: Record<JobState, string> = {
 	progress: "PROGRESS",
 	completed: "COMPLETED",
 	failed: "FAILED",
-	timed_out: "TIMED OUT",
+	timed_out: "SLA EXCEEDED · STILL RUNNING",
 	lost: "LOST",
 	cancelled: "CANCELLED",
 };

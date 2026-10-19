@@ -19,7 +19,7 @@ extension system in `exts/`.
 | `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
 | `web-ui-vision/` | Git submodule: visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |
 | `cloud-admin/` | Git submodule: session-scoped Cloudflare and Tailscale administration. |
-| `core/guards/context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, GPT-5.5, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
+| `core/guards/context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, Codex GPT-5.6 Luna with Sol/API fallback, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
 | `core/guards/context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `core/guards/file-tool-discipline.ts` | Makes GPT models use Pi's auditable `write` tool for new/full files and `edit` for targeted changes. Strengthens the per-turn prompt and blocks obvious shell/heredoc/script-based source-file authoring while allowing normal commands, generated artifacts, logs, and temporary files. |
 | `core/guards/answer-floor.ts` | Stops pi's own reply budget from silently collapsing to a handful of tokens. When a reply is cut off anyway, compacts if the budget was short and resumes it — no `/compact` by hand. |
@@ -38,7 +38,7 @@ wrong in a way that fails *silently* against a local llama.cpp server.
 `core/guards/context-optimize.ts` intercepts `session_before_compact`, so it covers the real
 built-in `/compact` command and automatic/overflow compaction rather than merely
 adding an alias. Each run starts at the next available tier—Claude Haiku 4.5,
-GPT-5.5, then a local provider whose id starts with `llamacpp`, `mlx`, `ollama`,
+Codex GPT-5.6 Luna (GPT-6.1 Sol if Luna is unavailable, or API GPT-5.5 if neither is available), then a local provider whose id starts with `llamacpp`, `mlx`, `ollama`,
 `lmstudio`, or `local`. Missing tiers are skipped. Empty, truncated, usage-limit,
 API, network, and broken-stream failures rotate immediately to the next tier;
 if every cheap tier fails, compaction is cancelled instead of silently billing

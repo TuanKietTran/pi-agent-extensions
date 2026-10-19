@@ -28,10 +28,13 @@ Irreversible jobs remain blocked unless the user-level `~/.pi/agent/settings.jso
 ```
 
 Run `/reload` after changing the setting. `PI_JOBS_ALLOW_IRREVERSIBLE=1` remains a process-level override.
-`sla_s`: hard timeout. `heartbeat_s`: 0 disables lost-detection by silence.
+`sla_s`: advisory completion deadline, not a hard timeout. A miss emits `timed_out` once while the process keeps running; its later exit still emits `completed` or `failed`. `keep_waiting` means leave it running; no restart or tool call is needed. Zero disables the deadline warning. `heartbeat_s`: 0 disables lost-detection by silence.
+
+Use `interactive` for agent-cli-lab hosts/attachments, delegated agent waits, REPLs and dev servers: no completion deadline and no silence-based kill. It still reports process exit and supports cancellation. A wrapper finishing does not prove its delegated agent finished; inspect that agent's screen/result.
 
 ```json
 {
+  "interactive": { "sla_s": 0, "heartbeat_s": 0, "class": "idempotent", "cancelable": true },
   "shell":  { "sla_s": 60,  "heartbeat_s": 0,  "class": "idempotent",   "cancelable": true },
   "test":   { "sla_s": 120, "heartbeat_s": 0,  "class": "idempotent",   "cancelable": true },
   "watch":  { "sla_s": 3600, "heartbeat_s": 10, "class": "idempotent",  "cancelable": true },

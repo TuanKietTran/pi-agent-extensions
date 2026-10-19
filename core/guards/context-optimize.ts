@@ -46,7 +46,7 @@ const COMMAND_DESCRIPTION = "Compact with a rotating cheap model and automatic f
 const SHORTCUT_KEY = "ctrl+shift+o";
 const SHORTCUT_DESCRIPTION = "Optimize context with cheap-model failover";
 const LABEL_UNKNOWN = "CTX —";
-const NOTE_NO_MODEL = "No compaction model is available (Haiku 4.5, GPT-5.5, or local)";
+const NOTE_NO_MODEL = "No compaction model is available (Haiku 4.5, GPT-5.6 Luna/Sol fallback, API GPT-5.5, or local)";
 const NOTE_BUSY = "Wait for the current turn to finish before optimizing context";
 const NOTE_OPTIMIZING = "Optimizing context…";
 const NOTE_OPTIMIZED = "Context optimized";
@@ -111,7 +111,7 @@ function updateStatus(ctx: ExtensionContext): void {
 }
 
 /** One representative from each cheap-model tier; the starting tier rotates. */
-function compactionModels(ctx: ExtensionContext): Model<any>[] {
+export function compactionModels(ctx: ExtensionContext): Model<any>[] {
   const available = ctx.modelRegistry.getAvailable();
   const pick = (predicate: (model: Model<any>) => boolean, preferredProviders: string[]) =>
     available
@@ -129,9 +129,18 @@ function compactionModels(ctx: ExtensionContext): Model<any>[] {
       (model) => /^claude-haiku-4-5(?:-|$)/.test(model.id),
       ["claude-cli", "anthropic"],
     ),
+    // Prefer the inexpensive Luna model, verified with this Codex account.
+    // Catalog availability alone does not imply ChatGPT subscription support:
+    // GPT-5.5 is API-only here. Sol remains a fallback when Luna is unavailable.
     pick(
-      (model) => model.id === "gpt-5.5",
-      ["openai-codex", "openai"],
+      (model) => model.provider === "openai-codex" && model.id === "gpt-5.6-luna",
+      ["openai-codex"],
+    ) ?? pick(
+      (model) => model.provider === "openai-codex" && model.id === "gpt-6.1-sol",
+      ["openai-codex"],
+    ) ?? pick(
+      (model) => model.id === "gpt-5.5" && model.provider !== "openai-codex",
+      ["openai"],
     ),
     pick(
       (model) => /^(?:llamacpp(?:-|$)|mlx(?:-|$)|ollama(?:-|$)|lmstudio(?:-|$)|local(?:-|$))/i.test(model.provider),

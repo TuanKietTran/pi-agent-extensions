@@ -80,7 +80,8 @@ const FAILED = "failed";
 const TIMED_OUT = "timed_out";
 const LOST = "lost";
 const CANCELLED = "cancelled";
-const TERMINAL: JobState[] = [COMPLETED, FAILED, TIMED_OUT, LOST, CANCELLED];
+// timed_out is an advisory SLA miss; the child is still supervised until it exits.
+const TERMINAL: JobState[] = [COMPLETED, FAILED, LOST, CANCELLED];
 
 // Messages
 const NOTE_RESUMED_ALIVE = "resumed: process still alive but unattached";
@@ -195,13 +196,17 @@ export class Supervisor {
 			else this.finish(job, FAILED, exitCode(code));
 		});
 
-		job.timers.push(
-			setTimeout(() => {
-				if (job.terminal) return;
-				// SLA miss: report, do not kill. The model chooses cancel / keep_waiting.
-				this.emit(job, TIMED_OUT, SLA_STEP);
-			}, cfg.sla_s * 1000),
-		);
+		// Interactive hosts and attached agents have no expected completion deadline.
+		// Zero disables only the SLA warning, not exit/cancel/heartbeat supervision.
+		if (cfg.sla_s > 0) {
+			job.timers.push(
+				setTimeout(() => {
+					if (job.terminal) return;
+					// SLA miss: report, do not kill. The model chooses cancel / keep_waiting.
+					this.emit(job, TIMED_OUT, SLA_STEP);
+				}, cfg.sla_s * 1000),
+			);
+		}
 		if (cfg.heartbeat_s > 0) {
 			job.timers.push(
 				setInterval(() => {
