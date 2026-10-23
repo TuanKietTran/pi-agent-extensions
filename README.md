@@ -169,7 +169,7 @@ Open WebUI can use the same values as an OpenAI-compatible connection.
 Keep the editable aggregate checkout in Downloads and install it by local path:
 
 ```sh
-git clone --recurse-submodules https://github.com/TuanKietTran/pi-agent-extensions ~/Downloads/pi-agent-extensions
+git clone https://github.com/TuanKietTran/pi-agent-extensions ~/Downloads/pi-agent-extensions
 pi install ~/Downloads/pi-agent-extensions
 cd ~/Downloads/pi-agent-extensions && npm run install:tui
 ```
@@ -181,14 +181,8 @@ The active user settings entry is equivalent to:
 ```
 
 Relative local package paths in `~/.pi/agent/settings.json` resolve from
-`~/.pi/agent`. The package manifest loads the extensions in this repository and
-its submodules without copying them into Pi's managed cache. After a non-recursive
-clone, initialize the submodules with:
-
-```sh
-cd ~/Downloads/pi-agent-extensions
-git submodule update --init --recursive
-```
+`~/.pi/agent`. The package manifest loads every extension in this repository without copying
+them into Pi's managed cache.
 
 ## Layout
 
