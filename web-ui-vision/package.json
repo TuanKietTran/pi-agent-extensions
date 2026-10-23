@@ -1,0 +1,28 @@
+{
+  "name": "pi-web-ui-vision",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension for visually observing and interacting with a live web UI",
+  "keywords": ["pi-package", "browser", "vision", "playwright", "web-ui"],
+  "license": "MIT",
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions/web-ui-vision.ts"]
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright-core": "^1.52.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
