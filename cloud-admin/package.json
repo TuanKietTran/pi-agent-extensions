@@ -1,0 +1,29 @@
+{
+  "name": "pi-cloud-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Session-scoped Cloudflare and Tailscale administration tools for Pi",
+  "keywords": ["pi-package", "cloudflare", "tailscale", "admin"],
+  "license": "MIT",
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions/cloud-admin.ts"]
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-tui": "0.84.4",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.0.55",
+    "typescript": "^5.7.0"
+  }
+}
