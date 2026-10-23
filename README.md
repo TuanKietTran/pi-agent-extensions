@@ -13,12 +13,13 @@ extension system in `exts/`.
 
 | Extension | What it does |
 |---|---|
-| `touchbar-usage/` | Git submodule: Claude Code and Codex quota polling with Touch Bar charts and a persistent right-panel TUI showing context/quota progress bars plus session input/output tokens. See its README for native host setup. |
-| `claude-cli/` | Git submodule: wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
-| `odysseus-bridge/` | Git submodule: exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
-| `macos-browser-control/` | Git submodule: native Quartz browser automation with a tracked virtual mouse. |
-| `web-ui-vision/` | Git submodule: visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |
-| `cloud-admin/` | Git submodule: session-scoped Cloudflare and Tailscale administration. |
+| `touchbar-usage/` | Claude Code and Codex quota polling with Touch Bar charts and a persistent right-panel TUI showing context/quota progress bars plus session input/output tokens. See its README for native host setup. |
+| `claude-cli/` | wraps the authenticated Claude CLI as a Pi provider while delegating tool calls and execution to Pi. Supports text and image input. |
+| `odysseus-bridge/` | exposes the live Pi harness and all authenticated Pi models through an OpenAI-compatible endpoint for Odysseus and other chat clients. |
+| `macos-browser-control/` | native Quartz browser automation with a tracked virtual mouse. |
+| `web-ui-vision/` | visual browser interaction via screenshots and reusable element references. Requires `playwright-core`. |
+| `cloud-admin/` | session-scoped Cloudflare and Tailscale administration. |
+| `skills/` | Claude Code skills (`bourbon-devbox`, `orchestrator-options`), moved here from the retired `claude-skills` repo. |
 | `core/guards/context-optimize.ts` | Routes built-in `/compact`, auto-compaction, `/optimize-context`, and the Touch Bar **Optimize** action through a round-robin cheap-model pool (Claude Haiku 4.5, Codex GPT-5.6 Luna with Sol/API fallback, local llama.cpp/MLX) with failover on any provider or transport error. Also adds `Ctrl-Shift-O` and a persistent context-percentage status. |
 | `core/guards/context-guard.ts` | Caps a single tool result to a share of the *active* model's context window and elides the middle, keeping head and tail. Points the model at pi's complete saved output instead of the truncated copy. |
 | `core/guards/file-tool-discipline.ts` | Makes GPT models use Pi's auditable `write` tool for new/full files and `edit` for targeted changes. Strengthens the per-turn prompt and blocks obvious shell/heredoc/script-based source-file authoring while allowing normal commands, generated artifacts, logs, and temporary files. |
