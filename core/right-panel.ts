@@ -96,6 +96,17 @@ const tabText = (tab: RightPanelTab): string => `${TAB_PADDING}${tab.label}${TAB
 /** Clip by visible terminal columns without cutting through ANSI color sequences. */
 const clip = (line: string, width: number): string => truncateToWidth(line, width);
 
+/** Keep the active model unambiguous even in narrow right panels. */
+export function modelLines(model: { provider: string; id: string } | undefined, width: number): string[] {
+	if (!model) return ["Model: unavailable"];
+	const text = `Model: ${model.provider}/${model.id}`;
+	const lines: string[] = [];
+	for (let index = 0; index < text.length; index += Math.max(1, width)) {
+		lines.push(text.slice(index, index + Math.max(1, width)));
+	}
+	return lines;
+}
+
 /**
  * Tab strip plus the active tab body. Clicking a label on the strip switches tabs.
  * The hit map is rebuilt on every render so clicks always match what is on screen.
@@ -119,7 +130,9 @@ function createPanel(theme: Theme): Component {
 			}
 
 			const active = tabs.find((tab) => tab.id === state.active) ?? tabs[0];
-			const body = uiContext ? active.lines(width, uiContext) : [];
+			const body = uiContext
+				? [...active.lines(width, uiContext), ...modelLines(uiContext.model, width)]
+				: [];
 			// Tab labels are short and the visible width fits every supported panel width.
 			// Do not slice the styled string: ANSI color sequences count toward string.length.
 			return [cells.join(TAB_SEPARATOR), ...body.map((line) => clip(line, width))];
@@ -196,6 +209,10 @@ export default function rightPanel(pi: ExtensionAPI): void {
 	}
 
 	pi.on(PI_EVENT.SESSION_START, async (_event, ctx) => {
+		uiContext = ctx;
+		refreshWidget();
+	});
+	pi.on(PI_EVENT.MODEL_SELECT, async (_event, ctx) => {
 		uiContext = ctx;
 		refreshWidget();
 	});
