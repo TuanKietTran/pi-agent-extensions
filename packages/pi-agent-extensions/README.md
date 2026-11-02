@@ -18,6 +18,7 @@ Pi's managed `~/.pi/agent/git` cache, which package updates may reset.
 | `touchbar-usage/index.ts` | Displays Claude Code and Codex rate-limit windows in Pi and provides the `/touchbar-usage` command; shares its usage engine with the native Touch Bar host. |
 | `browser-control/index.ts` | Adds macOS browser screenshot/tab/watch/input tools, or [Windows existing-session Brave control (Zen experimental)](browser-control/WINDOWS.md). Native actions remain lazy until invoked. |
 | `claude-cli/index.ts` | Registers the `claude-cli` provider backed by a local Claude CLI subprocess. |
+| `muse-proxy/index.ts` | Registers the chat-only `muse` provider backed by a [muse-proxy](https://github.com/uezo/muse-proxy) (OpenAI-compatible API to Muse). Pi tools are not bridged; see [`muse-proxy/README.md`](muse-proxy/README.md). |
 | `thinking-control.ts` | Adds the `/think` slash command pi lacks, and makes "off" actually reach the chat template instead of leaving thinking on at max effort. |
 | `remote-control.ts` | Shares the active pi session through a token-protected mobile web UI and optional Cloudflare Quick Tunnel. Start with `/remote-control start`; stop with `/remote-control stop`. |
 | `tui/` | Owns the responsive fullscreen layout and `/right-panel` collapse command: tools at the panel top, `aboveEditor` widgets in its middle, and `belowEditor` widgets plus statuses/footer at the bottom. Run `npm run install:tui` after Pi upgrades. |
