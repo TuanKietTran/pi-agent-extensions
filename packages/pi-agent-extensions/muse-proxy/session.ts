@@ -5,6 +5,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { renderTools, type ToolDef } from "./protocol.ts";
 
 export interface MuseBlock {
   type: string;
@@ -32,6 +33,19 @@ export const DEFAULT_LIMITS: PlanLimits = { maxChars: 15000, systemChars: 3000 }
 export const NO_TOOLS_NOTE =
   "Note: this chat is connected to a coding harness that cannot run host tools through this connection. Answer in plain text; do not emit tool calls.";
 
+export function toolPreamble(tools: ToolDef[]): string {
+  return [
+    "I'm working on my own laptop and I want you to be the brain while I act as your hands. I can run these tools on my laptop:",
+    renderTools(tools),
+    "Whenever you need me to run one, reply with a line in exactly this format, then stop and wait (several lines run several tools, in order):",
+    '@@RUN {"name":"<tool>","arguments":{...}}',
+    'Use the exact tool and argument names listed above, with the JSON on one line. I will run it and paste the result back starting with "OUTPUT". When you have enough information, answer normally in plain text. Thinking out loud before a request is fine.',
+  ].join("\n");
+}
+
+export const CONTINUE_NOTE =
+  "Continue the task. Request more tools with @@RUN lines, or give the final answer in plain text.";
+
 export function textOf(content: MuseMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
@@ -55,12 +69,21 @@ export function clip(text: string, max: number): string {
 export function formatMessage(message: MuseMessage, includeAssistant: boolean): string | undefined {
   if (message.role === "assistant") {
     if (!includeAssistant) return undefined;
+    const lines: string[] = [];
     const text = textOf(message.content).trim();
-    return text ? `Assistant: ${text}` : undefined;
+    if (text) lines.push(text);
+    if (typeof message.content !== "string") {
+      for (const block of message.content) {
+        if (block.type === "toolCall" && block.name) {
+          lines.push(`@@RUN ${JSON.stringify({ name: block.name, arguments: block.arguments ?? {} })}`);
+        }
+      }
+    }
+    return lines.length > 0 ? `Assistant: ${lines.join("\n")}` : undefined;
   }
   if (message.role === "toolResult") {
     const text = textOf(message.content).trim();
-    return `Tool result (${message.isError ? "error" : "success"}) for ${message.toolName ?? "tool"}:\n${text}`;
+    return `OUTPUT (${message.toolName ?? "tool"}, ${message.isError ? "error" : "ok"}):\n${text}`;
   }
   if (message.role === "system") return undefined;
   const text = textOf(message.content).trim();
@@ -101,7 +124,13 @@ export class SessionTracker {
     this.limits = limits;
   }
 
-  plan(messages: MuseMessage[], systemPrompt: string | undefined, salt = "", limits: PlanLimits = this.limits): Plan {
+  plan(
+    messages: MuseMessage[],
+    systemPrompt: string | undefined,
+    salt = "",
+    limits: PlanLimits = this.limits,
+    tools: ToolDef[] = [],
+  ): Plan {
     const convo = messages.filter((message) => message.role !== "system");
     if (convo.length === 0) throw new Error("muse-proxy received an empty context");
 
@@ -111,8 +140,8 @@ export class SessionTracker {
     const sessionId = fresh ? newSessionId() : state!.sessionId;
 
     const content = fresh
-      ? this.freshContent(convo, systemPrompt, limits)
-      : this.deltaContent(convo, state!.sent, limits);
+      ? this.freshContent(convo, systemPrompt, limits, tools)
+      : this.deltaContent(convo, state!.sent, limits, tools.length > 0);
 
     return { key, sessionId, content, fresh, sentAfter: convo.length };
   }
@@ -121,29 +150,48 @@ export class SessionTracker {
     this.states.set(plan.key, { sessionId: plan.sessionId, sent: plan.sentAfter });
   }
 
-  private deltaContent(convo: MuseMessage[], sent: number, limits: PlanLimits): string {
+  private deltaContent(convo: MuseMessage[], sent: number, limits: PlanLimits, withTools: boolean): string {
     const fresh = convo.slice(sent).map((m) => formatMessage(m, false)).filter((x): x is string => !!x);
     // Nothing new apart from assistant turns: resend the latest user text rather than nothing.
     const parts = fresh.length > 0 ? fresh : [formatMessage(convo[convo.length - 1], true) ?? ""].filter(Boolean);
-    return this.fit([], parts, limits);
+    const hasOutput = convo.slice(sent).some((m) => m.role === "toolResult");
+    const tail = withTools && hasOutput ? [CONTINUE_NOTE] : [];
+    // Every new block matters (parallel tool results), so share the budget
+    // evenly instead of dropping older ones.
+    const sep = "\n\n";
+    const overhead = tail.join(sep).length + sep.length * (parts.length + tail.length);
+    const share = Math.max(500, Math.floor((limits.maxChars - overhead) / Math.max(parts.length, 1)));
+    const body = parts.map((part) => clip(part, share));
+    return clip([...body, ...tail].join(sep), limits.maxChars);
   }
 
-  private freshContent(convo: MuseMessage[], systemPrompt: string | undefined, limits: PlanLimits): string {
-    const head: string[] = [NO_TOOLS_NOTE];
+  private freshContent(
+    convo: MuseMessage[],
+    systemPrompt: string | undefined,
+    limits: PlanLimits,
+    tools: ToolDef[],
+  ): string {
+    const head: string[] = [tools.length > 0 ? toolPreamble(tools) : NO_TOOLS_NOTE];
     if (systemPrompt?.trim()) {
-      head.push(`<pi_system>\n${clip(systemPrompt.trim(), limits.systemChars)}\n</pi_system>`);
+      const label = tools.length > 0
+        ? "Background on how I like the work done (my coding assistant's guidelines):"
+        : "Background:";
+      head.push(`${label}\n${clip(systemPrompt.trim(), limits.systemChars)}`);
     }
     const blocks = convo.map((m) => formatMessage(m, true)).filter((x): x is string => !!x);
-    return this.fit(head, blocks, limits);
+    const last = convo[convo.length - 1];
+    const tail = tools.length > 0 && last.role === "toolResult" ? [CONTINUE_NOTE] : [];
+    return this.fit(head, blocks, limits, tail);
   }
 
   /** Newest blocks win; the last block is always kept, clipped if it must be. */
-  private fit(head: string[], blocks: string[], limits: PlanLimits): string {
+  private fit(head: string[], blocks: string[], limits: PlanLimits, tail: string[] = []): string {
     const sep = "\n\n";
     const max = limits.maxChars;
     const headText = head.join(sep);
+    const tailText = tail.join(sep);
     const last = blocks[blocks.length - 1] ?? "";
-    const reserve = headText.length + (headText ? sep.length : 0);
+    const reserve = headText.length + (headText ? sep.length : 0) + tailText.length + (tailText ? sep.length : 0);
     const lastBudget = Math.max(max - reserve, Math.floor(max / 2));
     const keptLast = clip(last, lastBudget);
 
@@ -157,7 +205,7 @@ export class SessionTracker {
       used += cost;
     }
     const marker = dropped ? ["[earlier messages omitted]"] : [];
-    const parts = [headText, ...marker, ...history, keptLast].filter(Boolean);
+    const parts = [headText, ...marker, ...history, keptLast, tailText].filter(Boolean);
     return clip(parts.join(sep), max);
   }
 }

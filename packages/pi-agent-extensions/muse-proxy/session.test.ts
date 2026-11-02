@@ -84,7 +84,7 @@ test("tool results are labelled", () => {
   const first = t.plan([user("go")], undefined);
   t.commit(first);
   const next = t.plan([user("go"), assistant("calling"), { role: "toolResult", toolName: "read", content: "file text" }], undefined);
-  assert.equal(next.content, "Tool result (success) for read:\nfile text");
+  assert.equal(next.content, "OUTPUT (read, ok):\nfile text");
 });
 
 test("newSessionId matches the proxy's allowed alphabet", () => {
