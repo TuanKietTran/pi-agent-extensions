@@ -10,6 +10,8 @@ export interface MuseConfig {
   baseUrl: string;
   apiKey: string;
   maxChars: number;
+  rotateTurns: number;
+  minGapMs: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, file = CONFIG_FILE): MuseConfig {
@@ -27,7 +29,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, file = CONFIG_F
   }
   const baseUrl = (env.PI_MUSE_PROXY_URL ?? fromFile.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const maxChars = Number.parseInt(env.PI_MUSE_PROXY_MAX_CHARS ?? "", 10);
-  return { baseUrl, apiKey, maxChars: Number.isFinite(maxChars) && maxChars > 1000 ? maxChars : DEFAULT_LIMITS.maxChars };
+  const rotate = Number.parseInt(env.PI_MUSE_PROXY_ROTATE_TURNS ?? "", 10);
+  const gap = Number.parseInt(env.PI_MUSE_PROXY_MIN_GAP_MS ?? "", 10);
+  return {
+    baseUrl,
+    apiKey,
+    maxChars: Number.isFinite(maxChars) && maxChars > 1000 ? maxChars : DEFAULT_LIMITS.maxChars,
+    rotateTurns: Number.isFinite(rotate) && rotate >= 2 ? rotate : DEFAULT_LIMITS.rotateTurns ?? 14,
+    minGapMs: Number.isFinite(gap) && gap >= 0 ? gap : 1500,
+  };
 }
 
 export function errorMessageFromBody(status: number, body: string): string {

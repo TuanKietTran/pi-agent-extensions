@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 import type {
   Api,
   AssistantMessage,
@@ -33,6 +34,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_BASE_URL, errorMessageFromBody, loadConfig } from "./config.ts";
 import { correctionMessage, parseRuns, type ToolDef } from "./protocol.ts";
 import { DEFAULT_LIMITS, SessionTracker, type MuseMessage } from "./session.ts";
+import { SseParser, isRefusal, isTransient, sleep } from "./stream.ts";
 
 const { createAssistantMessageEventStream } = piAi;
 
@@ -82,26 +84,66 @@ function emptyOutput(model: Model<Api>): AssistantMessage {
   };
 }
 
+interface MuseReply {
+  /** Completed Muse messages, in order. */
+  replies: string[];
+}
+
+let lastRequestAt = 0;
+
+/** Opt-in: PI_MUSE_PROXY_DEBUG=<file> appends each request and reply as JSON lines. */
+function debugLog(entry: Record<string, unknown>): void {
+  const file = process.env.PI_MUSE_PROXY_DEBUG;
+  if (!file) return;
+  try { appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 }); } catch { /* best effort */ }
+}
+
+/** Streams one request; `onProgress` receives Muse's status text as it arrives. */
 async function askMuse(
   config: ReturnType<typeof loadConfig>,
   sessionId: string,
   content: string,
   signal: AbortSignal,
-): Promise<string> {
+  onProgress: (text: string) => void,
+): Promise<MuseReply> {
+  const wait = lastRequestAt + config.minGapMs - Date.now();
+  if (wait > 0) await sleep(wait, signal);
+  lastRequestAt = Date.now();
+
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" },
     body: JSON.stringify({
       model: MODEL_ID,
       session_id: sessionId,
-      stream: false,
+      stream: true,
       messages: [{ role: "user", content }],
     }),
     signal,
   });
-  const body = await response.text();
-  if (!response.ok) throw new Error(errorMessageFromBody(response.status, body));
-  return String(JSON.parse(body)?.choices?.[0]?.message?.content ?? "").trim();
+  if (!response.ok || !response.body) {
+    throw new Error(errorMessageFromBody(response.status, await response.text()));
+  }
+
+  const parser = new SseParser();
+  const decoder = new TextDecoder();
+  const replies: string[] = [];
+  const reader = response.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    for (const chunk of parser.push(decoder.decode(value, { stream: true }))) {
+      if (chunk.error) throw new Error(`muse-proxy: ${chunk.error}`);
+      if (chunk.kind === "progress") onProgress(chunk.text);
+      else if (chunk.kind === "reply" || chunk.kind === "other") {
+        // Reply chunks are whole messages; consecutive deltas of one message merge.
+        if (chunk.text) replies.push(chunk.text);
+      }
+    }
+  }
+  const cleaned = replies.map((reply) => reply.trim()).filter(Boolean);
+  debugLog({ sessionId, sent: content, replies: cleaned });
+  return { replies: cleaned };
 }
 
 function streamMuse(
@@ -125,7 +167,7 @@ function streamMuse(
         context.messages as unknown as MuseMessage[],
         getSystemPrompt(context),
         process.cwd(),
-        { ...DEFAULT_LIMITS, maxChars: config.maxChars },
+        { ...DEFAULT_LIMITS, maxChars: config.maxChars, rotateTurns: config.rotateTurns },
         toolDefs,
       );
 
@@ -133,21 +175,77 @@ function streamMuse(
       if (options?.signal) signals.push(options.signal);
       const signal = AbortSignal.any(signals);
 
+      let currentPlan = plan;
       let content = plan.content;
       let text = "";
       let parsed = parseRuns("", toolDefs);
-      for (let attempt = 0; ; attempt++) {
-        text = await askMuse(config, plan.sessionId, content, signal);
+      let refusals = 0;
+      let formatRetries = 0;
+
+      // Muse's status text streams in as live thinking.
+      let thinkingIndex = -1;
+      let thinkingText = "";
+      const seenProgress = new Set<string>();
+      const onProgress = (raw: string) => {
+        const line = raw.trim();
+        if (!line || seenProgress.has(line)) return;
+        seenProgress.add(line);
+        if (thinkingIndex < 0) {
+          thinkingIndex = output.content.length;
+          output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" } as any);
+          stream.push({ type: "thinking_start", contentIndex: thinkingIndex, partial: output });
+        }
+        const delta = (thinkingText ? "\n" : "") + line;
+        thinkingText += delta;
+        (output.content[thinkingIndex] as any).thinking = thinkingText;
+        stream.push({ type: "thinking_delta", contentIndex: thinkingIndex, delta, partial: output });
+      };
+
+      const rotate = () => {
+        // Start a brand-new Muse chat carrying the recent context.
+        tracker.reset(currentPlan.key);
+        currentPlan = tracker.plan(
+          context.messages as unknown as MuseMessage[],
+          getSystemPrompt(context),
+          process.cwd(),
+          { ...DEFAULT_LIMITS, maxChars: config.maxChars, rotateTurns: config.rotateTurns },
+          toolDefs,
+        );
+        content = currentPlan.content;
+      };
+      let transientRetries = 0;
+
+      for (;;) {
+        let replies: string[];
+        try {
+          ({ replies } = await askMuse(config, currentPlan.sessionId, content, signal, onProgress));
+        } catch (error) {
+          if (!isTransient(error) || signal.aborted || transientRetries >= 3) throw error;
+          await sleep([5_000, 15_000, 30_000][transientRetries++], signal);
+          continue;
+        }
+        const real = replies.filter((reply) => !isRefusal(reply));
+        if (real.length === 0) {
+          // Muse's canned "can't help" reply sticks to a chat (retrying in it never worked),
+          // so move to a new chat at once; back off a little if the new one refuses too.
+          refusals++;
+          if (refusals > 3) throw new Error(`muse-proxy: Muse keeps refusing this conversation (${replies[0] ?? "no reply"})`);
+          if (refusals > 1) await sleep(20_000, signal);
+          rotate();
+          continue;
+        }
+        text = real.join("\n\n");
         if (toolDefs.length === 0) break;
         parsed = parseRuns(text, toolDefs);
         // Ask Muse to fix a malformed request instead of silently dropping it.
-        if (parsed.calls.length === 0 && parsed.errors.length > 0 && attempt < MAX_FORMAT_RETRIES) {
+        if (parsed.calls.length === 0 && parsed.errors.length > 0 && formatRetries < MAX_FORMAT_RETRIES) {
+          formatRetries++;
           content = correctionMessage(parsed.errors);
           continue;
         }
         break;
       }
-      tracker.commit(plan);
+      tracker.commit(currentPlan);
 
       const calls: ToolCall[] = parsed.calls.map((call) => ({
         type: "toolCall",
@@ -157,14 +255,12 @@ function streamMuse(
       }));
       const prose = calls.length > 0 ? parsed.text : text;
 
-      if (calls.length > 0 && prose) {
-        // Muse reasoned before asking for the tool: show it as thinking.
-        const contentIndex = output.content.length;
-        output.content.push({ type: "thinking", thinking: prose, thinkingSignature: "" } as any);
-        stream.push({ type: "thinking_start", contentIndex, partial: output });
-        stream.push({ type: "thinking_delta", contentIndex, delta: prose, partial: output });
-        stream.push({ type: "thinking_end", contentIndex, content: prose, partial: output });
-      } else if (calls.length === 0) {
+      // Muse's reasoning before a tool request joins its streamed status as thinking.
+      if (calls.length > 0 && prose) onProgress(prose);
+      if (thinkingIndex >= 0) {
+        stream.push({ type: "thinking_end", contentIndex: thinkingIndex, content: thinkingText, partial: output });
+      }
+      if (calls.length === 0) {
         if (!prose) throw new Error("muse-proxy returned an empty reply (the request may have been superseded or cancelled)");
         const contentIndex = output.content.length;
         output.content.push({ type: "text", text: prose });
@@ -209,8 +305,10 @@ export default function (pi: ExtensionAPI) {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 32000,
-        maxTokens: 4096,
+        // Muse keeps the history server-side and only deltas are sent, so pi's own
+        // transcript size is not bounded by Muse; a small window only triggers costly compaction.
+        contextWindow: 400000,
+        maxTokens: 8192,
       },
     ],
     streamSimple: streamMuse,

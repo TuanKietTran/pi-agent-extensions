@@ -96,7 +96,7 @@ test("loadConfig: env beats file, key required, trailing slash trimmed", () => {
   try {
     const file = join(dir, "c.json");
     writeFileSync(file, JSON.stringify({ baseUrl: "http://file:1/v1/", apiKey: "filekey" }));
-    assert.deepEqual(loadConfig({}, file), { baseUrl: "http://file:1/v1", apiKey: "filekey", maxChars: 15000 });
+    assert.deepEqual(loadConfig({}, file), { baseUrl: "http://file:1/v1", apiKey: "filekey", maxChars: 15000, rotateTurns: 14, minGapMs: 1500 });
     assert.equal(loadConfig({ PI_MUSE_PROXY_KEY: "envkey", PI_MUSE_PROXY_URL: "http://env:2/v1" }, file).apiKey, "envkey");
     assert.equal(loadConfig({ PI_MUSE_PROXY_MAX_CHARS: "50000" }, file).maxChars, 50000);
     assert.throws(() => loadConfig({}, join(dir, "missing.json")), /no API key/);

@@ -22,13 +22,16 @@ export interface MuseMessage {
 }
 
 export interface PlanLimits {
+  /** Start a fresh Muse chat after this many requests or characters sent (long chats get refused). */
+  rotateTurns?: number;
+  rotateChars?: number;
   /** Hard cap for the whole message (the proxy default is 16000). */
   maxChars: number;
   /** Share of the cap pi's system prompt may take on a fresh session. */
   systemChars: number;
 }
 
-export const DEFAULT_LIMITS: PlanLimits = { maxChars: 15000, systemChars: 3000 };
+export const DEFAULT_LIMITS: PlanLimits = { maxChars: 15000, systemChars: 3000, rotateTurns: 14, rotateChars: 45000 };
 
 export const NO_TOOLS_NOTE =
   "Note: this chat is connected to a coding harness that cannot run host tools through this connection. Answer in plain text; do not emit tool calls.";
@@ -114,6 +117,8 @@ export interface Plan {
 interface State {
   sessionId: string;
   sent: number;
+  turns: number;
+  chars: number;
 }
 
 export class SessionTracker {
@@ -136,7 +141,10 @@ export class SessionTracker {
 
     const key = conversationKey(convo, salt);
     const state = this.states.get(key);
-    const fresh = !state || convo.length < state.sent;
+    const worn = !!state && (
+      state.turns >= (limits.rotateTurns ?? Infinity) || state.chars >= (limits.rotateChars ?? Infinity)
+    );
+    const fresh = !state || convo.length < state.sent || worn;
     const sessionId = fresh ? newSessionId() : state!.sessionId;
 
     const content = fresh
@@ -147,7 +155,19 @@ export class SessionTracker {
   }
 
   commit(plan: Plan): void {
-    this.states.set(plan.key, { sessionId: plan.sessionId, sent: plan.sentAfter });
+    const previous = this.states.get(plan.key);
+    const sameChat = !plan.fresh && previous?.sessionId === plan.sessionId;
+    this.states.set(plan.key, {
+      sessionId: plan.sessionId,
+      sent: plan.sentAfter,
+      turns: (sameChat ? previous!.turns : 0) + 1,
+      chars: (sameChat ? previous!.chars : 0) + plan.content.length,
+    });
+  }
+
+  /** Forget a conversation so the next plan starts a brand-new Muse chat. */
+  reset(key: string): void {
+    this.states.delete(key);
   }
 
   private deltaContent(convo: MuseMessage[], sent: number, limits: PlanLimits, withTools: boolean): string {

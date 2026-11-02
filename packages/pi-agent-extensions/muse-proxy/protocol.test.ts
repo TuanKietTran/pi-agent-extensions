@@ -132,3 +132,67 @@ test("a fresh resend renders earlier tool calls as @@RUN lines", () => {
   assert.ok(plan.content.includes("OUTPUT (read, ok):\nAAA"));
   assert.ok(plan.content.endsWith(CONTINUE_NOTE));
 });
+
+import { SseParser, isRefusal } from "./stream.ts";
+
+test("SseParser splits replies from progress and survives chunk boundaries", () => {
+  const p = new SseParser();
+  const line = (kind: string, content: string) =>
+    `data: ${JSON.stringify({ choices: [{ delta: { content } }], muse_proxy: { kind } })}\n\n`;
+  const all = line("progress", "is working\n") + line("reply", "@@RUN {\"name\":\"read\"}") + "data: [DONE]\n\n";
+  const mid = Math.floor(all.length / 2);
+  const out = [...p.push(all.slice(0, mid)), ...p.push(all.slice(mid))];
+  assert.deepEqual(out.map((c) => c.kind), ["progress", "reply"]);
+  assert.equal(out[1].text, '@@RUN {"name":"read"}');
+});
+
+test("SseParser surfaces stream errors and ignores the role chunk", () => {
+  const p = new SseParser();
+  const out = p.push('data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\ndata: {"error":{"message":"boom"}}\n\n');
+  assert.deepEqual(out, [{ kind: "other", text: "", error: "boom" }]);
+});
+
+test("isRefusal recognises the canned reply in several languages and nothing else", () => {
+  assert.equal(isRefusal("Sorry, I can't help you with this request at the moment.\nIs there anything else I can help you with?"), true);
+  assert.equal(isRefusal("Lo siento, ahora mismo no puedo ayudarte con esta solicitud. ¿Hay algo más en lo que pueda ayudarte?"), true);
+  assert.equal(isRefusal('@@RUN {"name":"read","arguments":{"path":"a"}}'), false);
+  assert.equal(isRefusal("I'm sorry the build failed; the error is a missing semicolon, which I can fix by editing line 4."), false);
+  assert.equal(isRefusal("x".repeat(400) + " sorry cannot"), false);
+});
+
+test("a chat is rotated after rotateTurns requests and resends fresh context", () => {
+  const t = new SessionTracker({ maxChars: 15000, systemChars: 3000, rotateTurns: 3, rotateChars: 1_000_000 });
+  const msgs: MuseMessage[] = [{ role: "user", content: "start" }];
+  const ids: string[] = [];
+  for (let turn = 0; turn < 5; turn++) {
+    const plan = t.plan(msgs, "sys", "", undefined, tools);
+    ids.push(plan.sessionId);
+    t.commit(plan);
+    msgs.push({ role: "assistant", content: "ok" }, { role: "user", content: `next ${turn}` });
+  }
+  assert.equal(ids[0], ids[1]);
+  assert.equal(ids[1], ids[2]);
+  assert.notEqual(ids[2], ids[3]);
+  assert.equal(ids[3], ids[4]);
+});
+
+test("reset starts a brand-new chat with the full preamble", () => {
+  const t = new SessionTracker();
+  const first = t.plan([{ role: "user", content: "go" }], "sys", "", undefined, tools);
+  t.commit(first);
+  t.reset(first.key);
+  const again = t.plan([{ role: "user", content: "go" }, { role: "assistant", content: "hm" }, { role: "user", content: "more" }], "sys", "", undefined, tools);
+  assert.equal(again.fresh, true);
+  assert.notEqual(again.sessionId, first.sessionId);
+  assert.ok(again.content.startsWith("I'm working on my own laptop"));
+});
+
+import { isTransient } from "./stream.ts";
+
+test("isTransient recognises dropped Muse connections but not aborts or bad requests", () => {
+  assert.equal(isTransient(new Error("muse-proxy: Muse disconnected before completing the reply.")), true);
+  assert.equal(isTransient(new Error("muse-proxy 502: muse_connection_error")), true);
+  assert.equal(isTransient(new TypeError("fetch failed")), true);
+  assert.equal(isTransient(new Error("aborted")), false);
+  assert.equal(isTransient(new Error("muse-proxy 400: Client-supplied tools are not supported.")), false);
+});

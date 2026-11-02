@@ -62,3 +62,9 @@ address) and keep its `api_key` secret.
 ```sh
 node --test muse-proxy/*.test.ts
 ```
+
+## Debugging
+
+`PI_MUSE_PROXY_DEBUG=/path/to/file.jsonl` appends every request and reply
+(session id, text sent, replies received) so a failing conversation can be
+replayed. The file contains your prompts and tool output; delete it afterwards.
