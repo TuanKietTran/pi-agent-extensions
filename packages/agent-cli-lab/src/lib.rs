@@ -1,3 +1,4 @@
+mod agents;
 mod commands;
 mod commander;
 mod console;
@@ -76,6 +77,8 @@ enum Commands {
     List(ListArgs),
     /// Show whether a session is working, asking or stalled, and its size and age.
     Status(StatusArgs),
+    /// Find every agent instance on this machine (labs, Claude Code sessions including this one, Pi, opencode, codex, ...).
+    Agents(agents::AgentsArgs),
     /// k9s-style console of every lab: table, lab graph, live screens. Opens a new terminal window unless run in one.
     Console(console::ConsoleArgs),
     /// End a session: stop its program and its host.
@@ -550,6 +553,7 @@ pub fn execute(cli: Cli) -> Result<i32> {
         },
         Commands::Stop(args) => commands::stop(args),
         Commands::Console(args) => console::run(args),
+        Commands::Agents(args) => agents::run(args),
         Commands::Key(args) => commands::key(args),
         Commands::Wait(args) => match args.lab_name {
             Some(name) => commander::wait(&name, args.timeout, args.idle_ms.unwrap_or(1000)),

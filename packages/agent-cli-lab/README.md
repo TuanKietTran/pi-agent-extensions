@@ -54,6 +54,17 @@ agent-cli-lab console --snapshot --view graph --width 130 --height 30   # one te
 
 The graph comes from `open --role ROLE --parent NAME [--model PROVIDER/ID]`. A session opened from inside another one is attached to it automatically (the hosted program gets `AGENT_CLI_LAB_SELF`).
 
+## All agents on this machine
+
+```sh
+agent-cli-lab agents                       # every agent instance: labs, Claude Code sessions (including the one you are in), Pi, opencode, codex, gemini, aider
+agent-cli-lab agents --json                # {generatedAt, agents:[...]} for scripts and GUIs
+agent-cli-lab agents --publish --watch 5   # also keep ~/.agent-cli-lab/agents.json fresh (atomic writes) for other readers
+agent-cli-lab console --view agents        # the same scan inside the console (key 4, or :agents)
+```
+
+Discovery is read-only and does not need the labs to cooperate: the process table finds every agent program and every lab host (the host's command line carries the lab's name, role, parent and model, in the current and the older `host -s NAME` form); `~/.claude/sessions/<pid>.json` gives each Claude Code session's id, status and directory, which is how the session you are typing in is found and marked; a transcript tail supplies the model, the token count and a short, redacted last message; a lab's own screen supplies working/asking/stalled and Pi's context figure. Helper processes (a browser native host, `claude mcp`) are not agents. Nothing is sent to any agent.
+
 ## Platforms
 
 Linux, macOS and Windows (native, through ConPTY) are supported. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests all three; see [`specs/006-cross-platform.md`](specs/006-cross-platform.md) for what has been verified on each.

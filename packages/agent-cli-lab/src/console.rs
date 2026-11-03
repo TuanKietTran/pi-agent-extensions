@@ -18,6 +18,7 @@ use ratatui::{
 };
 
 use super::*;
+use agents::{AgentRec, Registry};
 use commands::{human_duration, request_with_timeout};
 
 const AQUA: Color = Color::Rgb(0, 255, 255);
@@ -54,6 +55,9 @@ pub(crate) struct ConsoleArgs {
     /// View for the first frame (and for --snapshot): labs, graph or models.
     #[arg(long, default_value = "labs", value_name = "VIEW")]
     view: String,
+    /// Agent registry written by the observer (default: $AGENT_CLI_LAB_AGENTS, then ~/.agent-cli-lab/agents.json).
+    #[arg(long, value_name = "PATH")]
+    agents: Option<PathBuf>,
     /// Width of the --snapshot frame.
     #[arg(long, default_value_t = 150)]
     width: u16,
@@ -96,6 +100,7 @@ enum View {
     Labs,
     Graph,
     Models,
+    Agents,
 }
 
 impl View {
@@ -104,6 +109,7 @@ impl View {
             "labs" | "lab" | "l" | "ls" | "sessions" => Some(View::Labs),
             "graph" | "g" | "topology" | "tree" | "xray" => Some(View::Graph),
             "models" | "model" | "m" => Some(View::Models),
+            "agents" | "all" | "fleet" | "everyone" => Some(View::Agents),
             _ => None,
         }
     }
@@ -112,6 +118,7 @@ impl View {
             View::Labs => "labs",
             View::Graph => "graph",
             View::Models => "models",
+            View::Agents => "agents",
         }
     }
 }
@@ -608,6 +615,8 @@ struct App {
     flash: Option<(String, Instant, bool)>,
     interval_ms: u64,
     quit: bool,
+    agents: AgentsFeed,
+    agents_table: TableState,
 }
 
 impl App {
@@ -627,6 +636,8 @@ impl App {
             flash: None,
             interval_ms,
             quit: false,
+            agents: AgentsFeed::default(),
+            agents_table: TableState::default(),
         }
     }
 
@@ -880,6 +891,9 @@ impl App {
                 KeyCode::Char(':') => self.mode = Mode::Command(String::new()),
                 KeyCode::Char('/') => self.mode = Mode::Filter(self.filter.clone()),
                 KeyCode::Char('?') => self.mode = Mode::Help,
+                KeyCode::Enter | KeyCode::Char('l' | 'v' | 'd' | 'a' | 's' | 'm') if self.view == View::Agents => {
+                    self.say("agents view is read-only: press 1 or :labs to act on a lab", false)
+                }
                 KeyCode::Char('d') if ctrl => {
                     if let Some(name) = self.selected.clone() {
                         self.mode = Mode::Confirm(name);
@@ -907,6 +921,8 @@ impl App {
                     self.sort = self.sort.next();
                     self.reselect();
                 }
+                KeyCode::Down | KeyCode::Char('j') if self.view == View::Agents => self.step_agents(1),
+                KeyCode::Up | KeyCode::Char('k') if self.view == View::Agents => self.step_agents(-1),
                 KeyCode::Char('g') if self.view == View::Labs => self.view = View::Graph,
                 KeyCode::Char('g') | KeyCode::Home => self.jump(false),
                 KeyCode::Char('G') | KeyCode::End => self.jump(true),
@@ -914,12 +930,14 @@ impl App {
                     self.view = match self.view {
                         View::Labs => View::Graph,
                         View::Graph => View::Models,
-                        View::Models => View::Labs,
+                        View::Models => View::Agents,
+                        View::Agents => View::Labs,
                     };
                 }
                 KeyCode::Char('1') => self.view = View::Labs,
                 KeyCode::Char('2') => self.view = View::Graph,
                 KeyCode::Char('3') => self.view = View::Models,
+                KeyCode::Char('4') => self.view = View::Agents,
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
                 KeyCode::Up | KeyCode::Char('k') => self.step(-1),
                 KeyCode::PageDown => self.step(10),
@@ -960,6 +978,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Labs => draw_labs(frame, main, app),
         View::Graph => draw_graph_view(frame, main, app),
         View::Models => draw_models(frame, main, app),
+        View::Agents => draw_agents(frame, main, app),
     }
     draw_crumbs(frame, crumbs, app);
     match app.mode {
@@ -1012,8 +1031,12 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
             vec![key_hint("enter", "Peek screen"), key_hint("d", "Describe"), key_hint("a", "Attach (new window)"), key_hint("m", "Message"), key_hint("ctrl-d", "Stop")],
             vec![key_hint("↑↓", "Prev/next lab"), key_hint("←→", "Parent/child"), key_hint("tab", "Next view"), key_hint(":", "Command"), key_hint("?", "Help")],
         ),
+        View::Agents => (
+            vec![key_hint("1", "Labs"), key_hint("2", "Graph"), key_hint("3", "Models"), key_hint("4", "All agents"), key_hint("j k", "Move")],
+            vec![key_hint("/", "Filter"), key_hint(":", "Command"), key_hint("tab", "Next view"), key_hint("?", "Help"), key_hint("q", "Quit")],
+        ),
         View::Models => (
-            vec![key_hint("1", "Labs"), key_hint("2", "Graph"), key_hint("3", "Models")],
+            vec![key_hint("1", "Labs"), key_hint("2", "Graph"), key_hint("3", "Models"), key_hint("4", "All agents")],
             vec![key_hint("/", "Filter"), key_hint(":", "Command"), key_hint("?", "Help"), key_hint("q", "Quit")],
         ),
     };
@@ -1250,6 +1273,156 @@ fn clip_line(line: Line<'static>, skip: usize, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
+
+// ---------------------------------------------------------------- all agents (native scan)
+
+/// The latest registry from the scanner (or from a file given with `--agents`) and when it arrived.
+#[derive(Default)]
+struct AgentsFeed {
+    registry: Option<Registry>,
+    updated: Option<Instant>,
+    error: Option<String>,
+    shown: usize,
+}
+
+impl AgentsFeed {
+    fn set(&mut self, registry: Registry) {
+        self.registry = Some(registry);
+        self.updated = Some(Instant::now());
+        self.error = None;
+    }
+
+    fn age(&self) -> Option<Duration> {
+        self.updated.map(|at| at.elapsed())
+    }
+}
+
+/// A registry from the given file, or a fresh scan of this machine.
+fn scan_registry(file: &Option<PathBuf>, stalled_ms: u64) -> std::result::Result<Registry, String> {
+    match file {
+        Some(path) => load_registry_file(path).map_err(|error| format!("{error:#}")),
+        None => Ok(agents::registry_now(agents::scan(&agents::ScanOptions { probe: true, stalled_ms }))),
+    }
+}
+
+fn load_registry_file(path: &Path) -> Result<Registry> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("{} is not an agent registry", path.display()))
+}
+
+fn agent_status_color(status: &str) -> Color {
+    match status {
+        "working" | "up" => GREEN,
+        "asking" => YELLOW,
+        "stalled" => ORANGE,
+        "exited" | "gone" | "dead" => RED,
+        _ => GRAY,
+    }
+}
+
+impl App {
+    /// Rows of the agents view after filter and ordering: this session first, then people-started
+    /// agents, then labs, each by kind and name.
+    fn visible_agents(&self) -> Vec<AgentRec> {
+        let needle = self.filter.to_lowercase();
+        let mut rows: Vec<AgentRec> = self
+            .agents
+            .registry
+            .as_ref()
+            .map(|registry| registry.agents.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|agent| {
+                needle.is_empty()
+                    || [&agent.kind, &agent.name, &agent.role, &agent.status, &agent.model, &agent.cwd, &agent.last]
+                        .iter()
+                        .any(|field| field.as_deref().unwrap_or("").to_lowercase().contains(&needle))
+            })
+            .collect();
+        rows.sort_by(|a, b| (!a.this_session, a.managed, a.kind.clone(), a.name.clone()).cmp(&(!b.this_session, b.managed, b.kind.clone(), b.name.clone())));
+        rows
+    }
+
+    fn step_agents(&mut self, delta: isize) {
+        let total = self.agents.shown;
+        if total == 0 {
+            return;
+        }
+        let current = self.agents_table.selected().unwrap_or(0) as isize;
+        self.agents_table.select(Some((current + delta).clamp(0, total as isize - 1) as usize));
+    }
+}
+
+fn draw_agents(frame: &mut Frame, area: Rect, app: &mut App) {
+    let rows_data = app.visible_agents();
+    let total = app.agents.registry.as_ref().map(|r| r.agents.len()).unwrap_or(0);
+    app.agents.shown = rows_data.len();
+    if app.agents_table.selected().is_none() && !rows_data.is_empty() {
+        app.agents_table.select(Some(0));
+    }
+    if let Some(selected) = app.agents_table.selected() {
+        if selected >= rows_data.len() {
+            app.agents_table.select(rows_data.len().checked_sub(1));
+        }
+    }
+    let [table_area, note_area] = Layout::vertical([Constraint::Min(4), Constraint::Length(1)]).areas(area);
+    let block = titled_block("agents", rows_data.len(), total, &app.filter);
+    if app.agents.registry.is_none() {
+        let inner = block.inner(table_area);
+        frame.render_widget(block, table_area);
+        let text = match &app.agents.error {
+            Some(error) => format!("Could not read the agent registry: {error}"),
+            None => "Scanning for agents…".to_owned(),
+        };
+        let rect = Rect { y: inner.y + inner.height / 2, height: 1.min(inner.height), ..inner };
+        frame.render_widget(Paragraph::new(Line::from(text).alignment(Alignment::Center)).style(Style::default().fg(GRAY)), rect);
+        return;
+    }
+    let wide = table_area.width >= 130;
+    let mut header = vec!["KIND", "NAME", "ROLE", "STATUS", "MODEL", "CTX", "UPTIME"];
+    let mut widths = vec![Constraint::Length(8), Constraint::Min(20), Constraint::Length(24), Constraint::Length(9), Constraint::Min(18), Constraint::Length(11), Constraint::Length(8)];
+    if wide {
+        header.extend(["CWD", "LAST ACTIVITY"]);
+        widths.extend([Constraint::Length(24), Constraint::Min(30)]);
+    }
+    let head = Row::new(header.iter().map(|h| Cell::from(*h))).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+    let rows = rows_data.iter().map(|agent| {
+        let status = agent.status.clone().unwrap_or_default();
+        let name = agent.name.clone().or_else(|| agent.pid.map(|p| format!("pid {p}"))).unwrap_or_else(|| "-".into());
+        let name_style = if agent.this_session { Style::default().fg(AQUA).add_modifier(Modifier::BOLD) } else { Style::default().fg(AQUA) };
+        let mut cells = vec![
+            Cell::from(agent.kind.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(BLUE)),
+            Cell::from(if agent.this_session { format!("◆ {name}") } else { name }).style(name_style),
+            Cell::from(agent.role.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(if agent.this_session { PINK } else { GRAY })),
+            Cell::from(format!("{} {}", state_glyph(&status), status)).style(Style::default().fg(agent_status_color(&status))),
+            Cell::from(agent.model.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(Color::White)),
+            Cell::from(agent.context.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(GRAY)),
+            Cell::from(agent.uptime.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(GRAY)),
+        ];
+        if wide {
+            cells.push(Cell::from(agent.cwd.clone().map(|c| tail_path(&c, 24)).unwrap_or_default()).style(Style::default().fg(GRAY)));
+            cells.push(Cell::from(agent.last.clone().unwrap_or_default()).style(Style::default().fg(DIM)));
+        }
+        Row::new(cells)
+    });
+    let table = Table::new(rows, widths).header(head).block(block).row_highlight_style(Style::default().fg(Color::Black).bg(AQUA)).column_spacing(2);
+    frame.render_stateful_widget(table, table_area, &mut app.agents_table);
+    let mut kinds: Vec<(String, usize)> = Vec::new();
+    for agent in app.agents.registry.iter().flat_map(|r| r.agents.iter()) {
+        let kind = agent.kind.clone().unwrap_or_else(|| "other".into());
+        match kinds.iter_mut().find(|(k, _)| *k == kind) {
+            Some((_, n)) => *n += 1,
+            None => kinds.push((kind, 1)),
+        }
+    }
+    kinds.sort();
+    let counts = kinds.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(" · ");
+    let age = app.agents.age().map(|d| d.as_secs()).unwrap_or(0);
+    let stale = age > 30;
+    let text = format!(" {counts}  |  scanned {age}s ago{}", if stale { "  (stale)" } else { "" });
+    frame.render_widget(Paragraph::new(Span::styled(text, Style::default().fg(if stale { ORANGE } else { DIM }))), note_area);
+}
+
 fn draw_models(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut groups: Vec<(String, Vec<&Lab>)> = Vec::new();
     for lab in &app.labs {
@@ -1389,7 +1562,7 @@ fn draw_describe(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let rect = centered(area, 74, 26);
+    let rect = centered(area, 74, 27);
     frame.render_widget(Clear, rect);
     let section = |t: &str| Line::from(Span::styled(t.to_owned(), Style::default().fg(AQUA).add_modifier(Modifier::BOLD)));
     let row = |k: &str, d: &str| {
@@ -1402,7 +1575,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         section("Navigation"),
         row("j k ↑ ↓", "move the cursor"),
         row("g / G", "top / bottom of the table"),
-        row("tab  1 2 3", "labs / graph / models"),
+        row("tab  1 2 3 4", "labs / graph / models / all agents"),
         row("← → (graph)", "jump to the parent / first child"),
         Line::from(""),
         section("Actions on the lab under the cursor"),
@@ -1415,7 +1588,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         section("Filtering and commands"),
         row("/", "filter by name, role, state, model or parent"),
         row("o", "sort: tree, name, state, age"),
-        row(":labs :graph", ":models switch view"),
+        row(":labs :graph", ":models :agents switch view"),
         row(":stop [lab]", "stop a lab        :attach [lab]  attach in a window"),
         row("esc", "clear filter / close overlay"),
         row("q  :q  ctrl-c", "quit"),
@@ -1443,14 +1616,20 @@ fn draw_confirm(frame: &mut Frame, area: Rect, name: &str) {
 fn tui(args: &ConsoleArgs, view: View) -> Result<()> {
     let interval = Duration::from_millis(args.interval_ms.max(200));
     let stalled_ms = args.stalled_ms;
-    let (sender, receiver) = mpsc::channel::<Vec<Probe>>();
+    let (sender, receiver) = mpsc::channel::<(Vec<Probe>, Option<std::result::Result<Registry, String>>)>();
     let stop = Arc::new(AtomicBool::new(false));
+    let agents_file = args.agents.clone();
     let poller = {
         let stop = stop.clone();
         thread::spawn(move || {
+            let mut cycle: u64 = 0;
             while !stop.load(Ordering::Relaxed) {
                 let started = Instant::now();
-                if sender.send(probe_all(stalled_ms)).is_err() {
+                let probes = probe_all(stalled_ms);
+                // the all-agents scan costs a process listing and a few reads: every third refresh
+                let registry = (cycle % 3 == 0).then(|| scan_registry(&agents_file, stalled_ms));
+                cycle += 1;
+                if sender.send((probes, registry)).is_err() {
                     break;
                 }
                 while started.elapsed() < interval && !stop.load(Ordering::Relaxed) {
@@ -1464,8 +1643,13 @@ fn tui(args: &ConsoleArgs, view: View) -> Result<()> {
     let result = (|| -> Result<()> {
         let mut dirty = true;
         while !app.quit {
-            while let Ok(probes) = receiver.try_recv() {
+            while let Ok((probes, registry)) = receiver.try_recv() {
                 app.apply(probes);
+                match registry {
+                    Some(Ok(registry)) => app.agents.set(registry),
+                    Some(Err(error)) => app.agents.error = Some(error),
+                    None => {}
+                }
                 dirty = true;
             }
             if app.flash.as_ref().is_some_and(|(_, at, _)| at.elapsed() < Duration::from_millis(6100)) {
@@ -1500,6 +1684,10 @@ fn snapshot(args: &ConsoleArgs, view: View) -> Result<i32> {
     let first = probe_all(args.stalled_ms);
     app.apply(first.clone());
     app.apply(first);
+    match scan_registry(&args.agents, args.stalled_ms) {
+        Ok(registry) => app.agents.set(registry),
+        Err(error) => app.agents.error = Some(error),
+    }
     println!("{}", render_text(&mut app, args.width, args.height)?);
     Ok(0)
 }
@@ -1716,5 +1904,64 @@ mod tests {
         app.mode = Mode::Describe;
         let text = render_text(&mut app, 120, 30).unwrap();
         assert!(text.contains("Children:") && text.contains("w1, w2"), "{text}");
+    }
+
+    #[test]
+    fn agents_view_lists_every_kind_with_this_session_first() {
+        let registry: Registry = serde_json::from_str(
+            r#"{"generatedAt":"2026-11-03T06:00:00Z","agents":[
+              {"kind":"pi","name":"worker-a","role":"worker","pid":11,"model":"muse/muse","status":"working","context":"12%/400k","uptime":"3m","last":"created redline.ts","managed":true},
+              {"kind":"claude","name":"f0cedc99","role":"this session (commander)","pid":22,"model":"claude-sonnet-5-5","status":"working","context":"210k tok","uptime":"4h","thisSession":true},
+              {"kind":"opencode","name":"opencode-33","status":"idle"},
+              {"kind":"claude","name":"aws","role":"worker","status":"stalled","last":"waiting","managed":true}
+            ]}"#,
+        )
+        .unwrap();
+        let mut app = App::new(View::Agents, 1000);
+        app.agents.set(registry);
+        let text = render_text(&mut app, 170, 24).unwrap();
+        for needle in ["agents(all)[4]", "◆ f0cedc99", "worker-a", "opencode-33", "claude 2", "opencode 1", "pi 1", "created redline.ts", "scanned"] {
+            assert!(text.contains(needle), "missing {needle:?} in\n{text}");
+        }
+        let mine = text.lines().position(|l| l.contains("◆ f0cedc99")).unwrap();
+        let standalone = text.lines().position(|l| l.contains("opencode-33")).unwrap();
+        let lab = text.lines().position(|l| l.contains("worker-a")).unwrap();
+        assert!(mine < standalone && standalone < lab, "this session, then people-started agents, then labs");
+        app.filter = "redline".into();
+        assert_eq!(app.visible_agents().len(), 1);
+    }
+
+    #[test]
+    fn agents_view_says_so_while_scanning_and_when_a_file_is_broken() {
+        let mut app = App::new(View::Agents, 1000);
+        let text = render_text(&mut app, 150, 20).unwrap();
+        assert!(text.contains("Scanning for agents"), "{text}");
+        let directory = tempfile::tempdir().unwrap();
+        let broken = directory.path().join("broken.json");
+        fs::write(&broken, "{ not json").unwrap();
+        app.agents.error = scan_registry(&Some(broken), 8000).err();
+        let text = render_text(&mut app, 150, 20).unwrap();
+        assert!(text.contains("Could not read the agent registry"), "{text}");
+        let good = directory.path().join("good.json");
+        fs::write(&good, r#"{"agents":[{"kind":"codex","name":"c1","status":"idle"}]}"#).unwrap();
+        assert_eq!(scan_registry(&Some(good), 8000).unwrap().agents.len(), 1);
+    }
+
+    #[test]
+    fn view_switching_reaches_agents_by_key_tab_and_command() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut app = App::new(View::Labs, 1000);
+        app.key(key('4'));
+        assert_eq!(app.view, View::Agents);
+        app.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.view, View::Labs);
+        app.key(key(':'));
+        for c in "agents".chars() {
+            app.key(key(c));
+        }
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.view, View::Agents);
+        app.key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.mode, Mode::Normal, "the agents view cannot stop anything");
     }
 }
