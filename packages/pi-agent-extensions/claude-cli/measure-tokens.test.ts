@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { SCENARIO_PROMPT, SCENARIO_STEPS, collectTurns, createScratchRepo, renderReport, totals } from "./scripts/measure-tokens.mjs";
+import { SCENARIO_PROMPT, SCENARIO_STEPS, collectTurns, createScratchRepo, renderReport, totals, verifyScratchRepo } from "./scripts/measure-tokens.mjs";
 
 const line = (message: unknown) => JSON.stringify({ type: "message_end", message });
 
@@ -44,6 +44,18 @@ test("scratch repo is a git repo with the buggy file and a failing test", () => 
   try {
     assert.ok(existsSync(join(dir, ".git")));
     assert.match(readFileSync(join(dir, "src/calc.js"), "utf8"), /a - b/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verification fails on a fresh scratch repo and passes once the steps are done", () => {
+  const dir = createScratchRepo();
+  try {
+    assert.deepEqual(verifyScratchRepo(dir), { editApplied: false, notesWritten: false, testsPass: false });
+    writeFileSync(join(dir, "src/calc.js"), "export function add(a, b) {\n  return a + b;\n}\nexport function mul(a, b) {\n  return a * b;\n}\n");
+    writeFileSync(join(dir, "notes.txt"), "fixed add().\n");
+    assert.deepEqual(verifyScratchRepo(dir), { editApplied: true, notesWritten: true, testsPass: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

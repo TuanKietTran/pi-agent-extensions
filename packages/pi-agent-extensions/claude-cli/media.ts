@@ -7,9 +7,9 @@ type ClaudeInputBlock =
       source: { type: "base64"; media_type: string; data: string };
     };
 
-/** Build one Claude Code stream-json user event, preserving Pi image blocks. */
-export function createClaudeStreamInput(message: Message, prompt: string): string {
-  const content: ClaudeInputBlock[] = [{ type: "text", text: prompt }];
+/** Build one Claude Code stream-json user event: one text block per transcript entry, plus the newest message's images. */
+export function createClaudeStreamInput(message: Message, textBlocks: string[]): string {
+  const content: ClaudeInputBlock[] = textBlocks.map((text) => ({ type: "text", text }));
 
   if (Array.isArray(message.content)) {
     for (const block of message.content) {

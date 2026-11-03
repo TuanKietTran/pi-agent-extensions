@@ -56,6 +56,18 @@ const FILES = {
   "calc.test.js": 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { add, mul } from "./src/calc.js";\ntest("add", () => assert.equal(add(2, 3), 5));\ntest("mul", () => assert.equal(mul(2, 3), 6));\n',
 };
 
+/** Did the scenario actually get done? Compares the scratch repo with what the steps ask for. */
+export function verifyScratchRepo(dir) {
+  const read = (rel) => (existsSync(join(dir, rel)) ? readFileSync(join(dir, rel), "utf8") : "");
+  const { NODE_TEST_CONTEXT, ...env } = process.env; // a nested `node --test` must not think it is a subtest
+  const tests = spawnSync("node", ["--test"], { cwd: dir, encoding: "utf8", env });
+  return {
+    editApplied: /return a \+ b/.test(read("src/calc.js")),
+    notesWritten: read("notes.txt").includes("fixed add()"),
+    testsPass: tests.status === 0,
+  };
+}
+
 export function createScratchRepo() {
   const dir = mkdtempSync(join(tmpdir(), "pi-token-scenario-"));
   for (const [rel, body] of Object.entries(FILES)) {
@@ -178,8 +190,9 @@ function runOnce(opts, index) {
       spawns.forEach((s, i) => { if (turns[i]) turns[i].apiTurns = s.apiTurns; });
       const sizes = spawns[0] ? { appendChars: spawns[0].appendChars, schemaChars: spawns[0].schemaChars, toolDefChars: spawns[0].toolDefChars } : undefined;
       rmSync(usageLog, { force: true });
+      const outcome = verifyScratchRepo(repo);
       if (!opts.keep) rmSync(repo, { recursive: true, force: true });
-      resolveRun({ code, turns, totals: totals(turns), sizes, stderr: stderr.slice(0, 500), repo: opts.keep ? repo : undefined });
+      resolveRun({ code, turns, totals: totals(turns), outcome, sizes, stderr: stderr.slice(0, 500), repo: opts.keep ? repo : undefined });
     });
   });
 }
@@ -189,7 +202,9 @@ const fmt = (n) => Math.round(n).toLocaleString("en-US");
 export function renderReport(label, model, runs) {
   const out = [`### ${label} (${model}, ${runs.length} run${runs.length === 1 ? "" : "s"})`, ""];
   runs.forEach((run, i) => {
-    out.push(`Run ${i + 1}: exit ${run.code}, ${run.totals.turns} turns, ${run.totals.toolCalls} tool calls`, "");
+    const o = run.outcome;
+    const outcome = o ? `; outcome: edit ${o.editApplied ? "ok" : "MISSING"}, notes ${o.notesWritten ? "ok" : "MISSING"}, tests ${o.testsPass ? "pass" : "FAIL"}` : "";
+    out.push(`Run ${i + 1}: exit ${run.code}, ${run.totals.turns} turns, ${run.totals.toolCalls} tool calls${outcome}`, "");
     out.push("| # | tool call(s) | input | cache write | cache read | output | API round trips | wall s |", "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |");
     run.turns.forEach((t, n) => {
       out.push(`| ${n + 1} | ${t.tools.join("+") || "(final text)"} | ${fmt(t.input)} | ${fmt(t.cacheWrite)} | ${fmt(t.cacheRead)} | ${fmt(t.output)} | ${t.apiTurns ?? "?"} | ${(t.wallMs / 1000).toFixed(1)} |`);
