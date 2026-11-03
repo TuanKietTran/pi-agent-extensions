@@ -49,6 +49,20 @@ The key is the proxy's own `api_key` from `proxy.toml`, not a Muse credential.
 - **Latency.** Requests are non-streaming; expect roughly 6 to 20 seconds per
   turn, so tool loops are slow.
 - Each pi conversation creates a Muse side chat; use the proxy only for this.
+- **Side-chat lifecycle.** The provider tracks every side chat it starts.
+  - *Quit, reload, `/new`, resume, fork:* all of them are retired, so a new
+    conversation never resumes an old chat. Chats dropped mid-session (rewind,
+    rotation after a refusal) are retired too.
+  - *`/compact` (also automatic compaction):* the summary is requested as plain
+    text with no tool protocol. When it succeeds, every related chat is retired
+    and the next turn opens one new chat that starts from the summary. If
+    compaction fails or is cancelled, the conversation's own chats stay and
+    only the chat opened for the summary is retired.
+  - *Limit:* neither muse-proxy nor the Muse Gadget SDK has a call that deletes
+    a side chat, so "retired" means the extension forgets and never reuses it.
+    Remove the leftovers in the Muse app. `reap()` in `index.ts` is the single
+    place to add real deletion if the proxy gains it. `PI_MUSE_PROXY_DEBUG=<file>`
+    logs each retirement.
 
 ## Setting up the proxy
 

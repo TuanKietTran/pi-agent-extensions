@@ -64,6 +64,13 @@ function getSystemPrompt(context: { messages: Message[]; systemPrompt?: string }
 
 const tracker = new SessionTracker();
 
+/**
+ * Set between pi's compaction start and end. The summary is written in plain
+ * text with no tool protocol, and when it succeeds every related chat is
+ * folded into one fresh chat that opens with that summary.
+ */
+let compacting: { chatsBefore: string[] } | undefined;
+
 function emptyOutput(model: Model<Api>): AssistantMessage {
   return {
     role: "assistant",
@@ -82,6 +89,16 @@ function emptyOutput(model: Model<Api>): AssistantMessage {
     stopReason: "pending",
     timestamp: Date.now(),
   };
+}
+
+/**
+ * Muse has no call (in the proxy or the gadget SDK) that deletes a side chat,
+ * so retiring one only ends our use of it: it is forgotten, never resumed, and
+ * a new conversation opens a new chat. This is the single place to hook real
+ * deletion in if the proxy ever gains it.
+ */
+function reap(ids: string[], reason: string): void {
+  if (ids.length > 0) debugLog({ retired: ids, reason });
 }
 
 interface MuseReply {
@@ -157,7 +174,8 @@ function streamMuse(
     const output = emptyOutput(model);
     try {
       const config = loadConfig();
-      const tools = getTools(context);
+      // A compaction summary is plain text: never offer the @@RUN tool protocol during one.
+      const tools = compacting ? [] : getTools(context);
       const toolDefs: ToolDef[] = tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
@@ -246,6 +264,7 @@ function streamMuse(
         break;
       }
       tracker.commit(currentPlan);
+      reap(tracker.takeAbandoned(), "rotated");
 
       const calls: ToolCall[] = parsed.calls.map((call) => ({
         type: "toolCall",
@@ -294,6 +313,27 @@ function streamMuse(
 }
 
 export default function (pi: ExtensionAPI) {
+  // Any shutdown (quit, /new, resume, fork, reload) ends the conversation these chats served.
+  pi.on("session_shutdown", (event) => {
+    compacting = undefined;
+    reap([...tracker.takeAbandoned(), ...tracker.retire()], event.reason);
+  });
+
+  // /compact: summarize as plain text, then gather the related chats into one.
+  pi.on("session_before_compact", () => {
+    compacting = { chatsBefore: tracker.chats() };
+  });
+  pi.on("session_compact", () => {
+    compacting = undefined;
+    reap([...tracker.takeAbandoned(), ...tracker.retire()], "compact");
+  });
+  pi.on("session_compact_failed", () => {
+    // Keep the conversation's chats; drop only the one the summary request opened.
+    const before = compacting?.chatsBefore ?? tracker.chats();
+    compacting = undefined;
+    reap(tracker.retire(before), "compact-failed");
+  });
+
   pi.registerProvider(PROVIDER_ID, {
     baseUrl: DEFAULT_BASE_URL,
     apiKey: PROVIDER_ID,

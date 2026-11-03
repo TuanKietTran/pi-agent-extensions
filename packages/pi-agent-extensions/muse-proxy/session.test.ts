@@ -110,3 +110,68 @@ test("errorMessageFromBody surfaces the proxy's message", () => {
   );
   assert.match(errorMessageFromBody(502, "<html>bad</html>"), /^muse-proxy 502: <html>/);
 });
+
+test("the tracker owns every chat it plans and retires them all", () => {
+  const t = new SessionTracker();
+  const a = t.plan([user("task a")], undefined);
+  t.commit(a);
+  const b = t.plan([user("task b")], undefined);
+  t.commit(b);
+  assert.deepEqual(t.chats().sort(), [a.sessionId, b.sessionId].sort());
+
+  const gone = t.retire();
+  assert.deepEqual(gone.sort(), [a.sessionId, b.sessionId].sort());
+  assert.deepEqual(t.chats(), []);
+
+  // After /new or a restart the same opening message gets a brand-new chat.
+  const again = t.plan([user("task a")], undefined);
+  assert.equal(again.fresh, true);
+  assert.ok(![a.sessionId, b.sessionId].includes(again.sessionId));
+});
+
+test("retire can spare the chats that existed before a failed compaction", () => {
+  const t = new SessionTracker();
+  const main = t.plan([user("main task")], undefined);
+  t.commit(main);
+  const before = t.chats();
+  const summary = t.plan([user("summarize everything")], undefined);
+  t.commit(summary);
+
+  assert.deepEqual(t.retire(before), [summary.sessionId]);
+  assert.deepEqual(t.chats(), [main.sessionId]);
+  const next = t.plan([user("main task"), assistant("ok"), user("more")], undefined);
+  assert.equal(next.fresh, false);
+  assert.equal(next.sessionId, main.sessionId);
+});
+
+test("a compaction folds the old chat and the summary chat into one new chat", () => {
+  const t = new SessionTracker();
+  const main = t.plan([user("build it")], undefined);
+  t.commit(main);
+  const summary = t.plan([user("summarize: build it ...")], undefined);
+  t.commit(summary);
+  assert.equal(t.chats().length, 2);
+
+  assert.equal(t.retire().length, 2);
+  const after = t.plan([user("The conversation was compacted into this summary: ..."), user("continue")], undefined);
+  t.commit(after);
+  assert.deepEqual(t.chats(), [after.sessionId]);
+  assert.ok(after.content.includes("compacted into this summary"));
+});
+
+test("chats dropped by a rewind or a reset are reported once as abandoned", () => {
+  const t = new SessionTracker();
+  const first = t.plan([user("one"), assistant("a"), user("two")], undefined);
+  t.commit(first);
+  // Rewind: fewer messages than were sent opens a new chat.
+  const second = t.plan([user("one")], undefined);
+  assert.notEqual(second.sessionId, first.sessionId);
+  assert.deepEqual(t.takeAbandoned(), [first.sessionId]);
+  assert.deepEqual(t.takeAbandoned(), []);
+  assert.deepEqual(t.chats(), [second.sessionId]);
+
+  t.commit(second);
+  t.reset(second.key);
+  assert.deepEqual(t.takeAbandoned(), [second.sessionId]);
+  assert.deepEqual(t.chats(), []);
+});

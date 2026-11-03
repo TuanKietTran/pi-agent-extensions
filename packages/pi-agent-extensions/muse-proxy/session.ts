@@ -123,6 +123,10 @@ interface State {
 
 export class SessionTracker {
   private readonly states = new Map<string, State>();
+  /** Every Muse chat this tracker started and has not retired yet. */
+  private readonly owned = new Set<string>();
+  /** Chats dropped along the way (rewind, wear, refusal), waiting for takeAbandoned(). */
+  private abandoned: string[] = [];
   private readonly limits: PlanLimits;
 
   constructor(limits: PlanLimits = DEFAULT_LIMITS) {
@@ -145,7 +149,9 @@ export class SessionTracker {
       state.turns >= (limits.rotateTurns ?? Infinity) || state.chars >= (limits.rotateChars ?? Infinity)
     );
     const fresh = !state || convo.length < state.sent || worn;
+    if (fresh && state) this.abandon(state.sessionId);
     const sessionId = fresh ? newSessionId() : state!.sessionId;
+    this.owned.add(sessionId);
 
     const content = fresh
       ? this.freshContent(convo, systemPrompt, limits, tools)
@@ -167,7 +173,39 @@ export class SessionTracker {
 
   /** Forget a conversation so the next plan starts a brand-new Muse chat. */
   reset(key: string): void {
+    const state = this.states.get(key);
+    if (state) this.abandon(state.sessionId);
     this.states.delete(key);
+  }
+
+  /** Muse chats started here and still in use. */
+  chats(): string[] {
+    return [...this.owned];
+  }
+
+  /**
+   * Retire every chat except `keep`: forget them and any conversation that was
+   * using them, so the next plan opens a new chat. Returns the retired ids.
+   * (Muse offers no call to delete a side chat, so this only ends our use of it.)
+   */
+  retire(keep: Iterable<string> = []): string[] {
+    const spare = new Set(keep);
+    const gone = [...this.owned].filter((id) => !spare.has(id));
+    const goneSet = new Set(gone);
+    for (const id of gone) this.owned.delete(id);
+    for (const [key, state] of this.states) if (goneSet.has(state.sessionId)) this.states.delete(key);
+    return gone;
+  }
+
+  /** Chats dropped by rewinds, wear and resets since the last call. */
+  takeAbandoned(): string[] {
+    const ids = this.abandoned;
+    this.abandoned = [];
+    return ids;
+  }
+
+  private abandon(sessionId: string): void {
+    if (this.owned.delete(sessionId)) this.abandoned.push(sessionId);
   }
 
   private deltaContent(convo: MuseMessage[], sent: number, limits: PlanLimits, withTools: boolean): string {
