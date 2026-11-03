@@ -58,6 +58,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClaudeStreamInput } from "./media.ts";
 import { startMcpServer, type McpHandle } from "./mcp.ts";
 import { estimateCostUsd } from "./cost-estimate.ts";
+import { advisorArgs } from "./cli-args.ts";
 import { EarlyStop } from "./early-stop.ts";
 import { BASE_SYSTEM_PROMPT, buildTranscriptBlocks, createOutputSchema, createToolBridgePrompt } from "./prompt.ts";
 import { RESPONSE_POLICY, TEXT_OUTPUT_SCHEMA } from "./response-policy.ts";
@@ -235,6 +236,7 @@ function streamClaudeCLI(
         "--system-prompt", BASE_SYSTEM_PROMPT,
         "--append-system-prompt-file", appendFile,
       ];
+      args.push(...advisorArgs());
       if (options?.reasoning) {
         args.push("--effort", options.reasoning === "minimal" ? "low" : options.reasoning);
       }
