@@ -44,6 +44,36 @@ agent-cli-lab send -n w4 -e '/model opencode-cli/opencode/gpt-6-luna'
 
 opencode-cli goes through the free Zen quota (`provider.free-limit`, long retry-after once exhausted), so use it for the few steps that need it and go back to Muse. Pass `--model PROVIDER/ID` to `open` only when the program line does not say it (for example a lab switched in-session), so the console labels it correctly.
 
+## Three-role team: builder, explorer, advisor
+
+For work that needs a lead, cheap parallel reading, and an independent check, open a team of Claude labs with one command:
+
+```sh
+lab-team up -p demo --parent cmdr --cwd /absolute/repo      # demo-builder, demo-explorer, demo-advisor
+lab-team plan -p demo                                        # print the open commands only
+lab-team down -p demo                                        # stop advisor, explorer, builder
+```
+
+| Role | Model | Does | Rules |
+| --- | --- | --- | --- |
+| `builder` | Sonnet 5.5 | writes and runs the code | the only editing lab; one worktree |
+| `explorer` | Haiku 5.5 | reads, searches, summarises, checks pages | read-only; send it questions that need many file reads |
+| `advisor` | Opus 5.5 | reviews | consult sparingly: it spends the most quota |
+
+All three are Pi labs on the `claude-cli` provider (`pi --provider claude-cli --model <id> --no-session`, started with the `CLAUDE_CODE_*` variables unset so a nested Claude Code does not inherit the parent's session). The explorer and advisor hang under the builder in the graph, the builder under `--parent`; `agent-cli-lab console` colours the three roles and `lab-gui` draws them with their own shapes. Override a model with `LAB_TEAM_BUILDER_MODEL`, `LAB_TEAM_EXPLORER_MODEL`, `LAB_TEAM_ADVISOR_MODEL`.
+
+**When to consult the advisor** (a handful of times per task, not per step):
+
+1. **Plan review**: once, after the plan is written and before the first edit. Send the plan and the constraints, ask for gaps and risks only.
+2. **Breaking an error loop**: after the same failure survives two honest fixes. Send the error, what was tried, and the relevant code.
+3. **Final gap check**: once, before reporting done. Send the diff summary and the original requirements, ask what is missing or unverified.
+
+Give the advisor the files or diff to read rather than a long retelling, and ask a closed question ("what would you change?") so the answer is short. Do not ask it to write code. Use the explorer for anything that is mostly reading, and stop it when the answer is in.
+
+## Lab GUI
+
+`lab-gui` (or `node packages/lab-gui/server.mjs --open`) serves a local browser view of the same graph at `http://127.0.0.1:4317/`: roles with their own shapes, live state, activity, model and token/cost counters, a live screen peek, message, stop (with confirmation) and attach. It binds loopback only and polls only while a page is open. See `packages/lab-gui/README.md`.
+
 ## Lab graph and console
 
 `open` records `--role` and `--parent`. A lab opened from inside a manager lab (the hosted program gets `AGENT_CLI_LAB_SELF=<its name>`) is attached to that manager automatically, so managers need no extra flags. Role is inferred when left out: has children, `manager`; has a parent, `worker`.
