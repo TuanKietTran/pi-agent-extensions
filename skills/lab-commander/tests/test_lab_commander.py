@@ -74,7 +74,7 @@ class LabCommanderTests(unittest.TestCase):
 
     def test_relocated_shell_tests(self):
         scripts = sorted((SKILL / "tests").glob("*.sh"))
-        self.assertEqual(len(scripts), 3)
+        self.assertEqual(len(scripts), 4)
         for script in scripts:
             with self.subTest(script=script.name):
                 subprocess.run(["sh", str(script)], check=True, timeout=30)

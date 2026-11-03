@@ -14,7 +14,7 @@ Use `agent-cli-lab` to host and control interactive PTYs. `labctl` is a compatib
 Detect the CLI by capability, not version: `agent-cli-lab open --help >/dev/null 2>&1` succeeds on the main CLI and fails on legacy 0.1.0. Main CLI examples:
 
 ```sh
-agent-cli-lab open -n worker --cwd /absolute/repo -- pi --no-session
+agent-cli-lab open -n worker --role worker --parent mgr1 --cwd /absolute/repo -- pi --provider muse --model muse --thinking off --no-session
 agent-cli-lab send -n worker --file /absolute/brief.md --paced
 agent-cli-lab status -n worker
 agent-cli-lab stop -n worker
@@ -22,9 +22,73 @@ agent-cli-lab stop -n worker
 
 Consult `agent-cli-lab <command> --help` for `open`, `send`, `status`, `watch`, `key`, `stop`, `list`, and `host` options. **Legacy 0.1.0:** use `host -s <name> -- <cmd>` (background), `send -s`, `screen -s`, `ask -s`, and `ls`; it has no stop command, so send `/quit` + Enter or Ctrl-C twice. Run `install.sh` to upgrade.
 
+## Models: Muse first, opencode-cli sometimes
+
+**Every manager and every worker is a Muse Pi lab.** Open each one with:
+
+```sh
+agent-cli-lab open -n NAME --role manager|worker --parent PARENT --cwd /absolute/dir -- \
+  pi --provider muse --model muse --thinking off --no-session
+```
+
+Muse quirks (learned running it as executor and manager): give it **one brief file per prompt**, and send the one-line pointer with `--paced`; if it refuses or wedges on a prompt, send `/new` and rebrief instead of arguing. Tell the user if Muse stalls as a manager; do not silently fall back to a Claude CLI lab.
+
+**Sometimes switch to the opencode-cli extension's models** (`pi --list-models | grep opencode-cli`, for example `opencode/gpt-6-luna`, `opencode/gpt-6.1-sol`, `opencode/claude-sonnet-5-5`), when a step needs a stronger or different model, or Muse is down:
+
+```sh
+# at launch (the console shows this in the MODEL column)
+agent-cli-lab open -n w4 --role worker --parent mgr1 -- pi --provider opencode-cli --model opencode/gpt-6-luna --no-session
+# inside a running lab
+agent-cli-lab send -n w4 -e '/model opencode-cli/opencode/gpt-6-luna'
+```
+
+opencode-cli goes through the free Zen quota (`provider.free-limit`, long retry-after once exhausted), so use it for the few steps that need it and go back to Muse. Pass `--model PROVIDER/ID` to `open` only when the program line does not say it (for example a lab switched in-session), so the console labels it correctly.
+
+## Three-role team: builder, explorer, advisor
+
+For work that needs a lead, cheap parallel reading, and an independent check, open a team of Claude labs with one command:
+
+```sh
+lab-team up -p demo --parent cmdr --cwd /absolute/repo      # demo-builder, demo-explorer, demo-advisor
+lab-team plan -p demo                                        # print the open commands only
+lab-team down -p demo                                        # stop advisor, explorer, builder
+```
+
+| Role | Model | Does | Rules |
+| --- | --- | --- | --- |
+| `builder` | Sonnet 5.5 | writes and runs the code | the only editing lab; one worktree |
+| `explorer` | Haiku 5.5 | reads, searches, summarises, checks pages | read-only; send it questions that need many file reads |
+| `advisor` | Opus 5.5 | reviews | consult sparingly: it spends the most quota |
+
+All three are Pi labs on the `claude-cli` provider (`pi --provider claude-cli --model <id> --no-session`, started with the `CLAUDE_CODE_*` variables unset so a nested Claude Code does not inherit the parent's session). The explorer and advisor hang under the builder in the graph, the builder under `--parent`; `agent-cli-lab console` colours the three roles and `lab-gui` draws them with their own shapes. Override a model with `LAB_TEAM_BUILDER_MODEL`, `LAB_TEAM_EXPLORER_MODEL`, `LAB_TEAM_ADVISOR_MODEL`.
+
+**When to consult the advisor** (a handful of times per task, not per step):
+
+1. **Plan review**: once, after the plan is written and before the first edit. Send the plan and the constraints, ask for gaps and risks only.
+2. **Breaking an error loop**: after the same failure survives two honest fixes. Send the error, what was tried, and the relevant code.
+3. **Final gap check**: once, before reporting done. Send the diff summary and the original requirements, ask what is missing or unverified.
+
+Give the advisor the files or diff to read rather than a long retelling, and ask a closed question ("what would you change?") so the answer is short. Do not ask it to write code. Use the explorer for anything that is mostly reading, and stop it when the answer is in.
+
+## Lab GUI
+
+`lab-gui` (or `node packages/lab-gui/server.mjs --open`) serves a local browser view of the same graph at `http://127.0.0.1:4317/`: roles with their own shapes, live state, activity, model and token/cost counters, a live screen peek, message, stop (with confirmation) and attach. It binds loopback only and polls only while a page is open. See `packages/lab-gui/README.md`. The same board as a desktop app for macOS and Windows: `packages/lab-gui-desktop`.
+
+## Lab graph and console
+
+`open` records `--role` and `--parent`. A lab opened from inside a manager lab (the hosted program gets `AGENT_CLI_LAB_SELF=<its name>`) is attached to that manager automatically, so managers need no extra flags. Role is inferred when left out: has children, `manager`; has a parent, `worker`.
+
+```sh
+agent-cli-lab console                    # opens a new terminal window (Ghostty on macOS; AGENT_CLI_LAB_TERMINAL / --terminal to change)
+agent-cli-lab console --here             # run in the current terminal instead
+agent-cli-lab console --snapshot --view graph   # one text frame, no terminal needed (for you, the commander, to read)
+```
+
+The console is a k9s-style TUI: `:labs`, `:graph`, `:models` (or `1 2 3` / Tab), `/` filter, `enter` peek the live screen, `d` describe, `a` attach in a new window, `m` message a lab, `ctrl-d` stop (asks first), `o` sort, `?` help. Open it for the user at the start of a run (`agent-cli-lab console`) and use `--snapshot` to read the same state yourself.
+
 ## Session workflow
 
-1. **Open:** start a named lab with `open` or `host`; use one worktree per editing worker and keep probe workers read-only.
+1. **Open:** start a named lab with `open` or `host` (Muse, with `--role` and `--parent`, see Models); use one worktree per editing worker and keep probe workers read-only.
 2. **Brief:** send exactly one line pointing to the brief file; Enter submits immediately in Pi.
 3. **Monitor:** use `lab-watch <name>` or inspect screen/status. Text sent while Pi is busy queues. `Working` in its status bar means busy.
 4. **Checkpoint:** at phase boundaries, record marker lines in append-only `status/<name>.log`; screens scroll and recordings are raw ANSI.

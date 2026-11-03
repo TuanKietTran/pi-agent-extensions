@@ -42,6 +42,29 @@ agent-cli-lab stop -n ux
 
 `stalled` means no output for a while and no dialog: the program ended its turn and waits for you, even if it only asked a question in plain words. Every command also works against hosts started before these commands existed (it falls back to `send` and `screen`), and `-s PATH` still works wherever `-n NAME` does.
 
+## Console (k9s-style TUI)
+
+```sh
+agent-cli-lab console                 # new terminal window (Ghostty on macOS)
+agent-cli-lab console --here          # this terminal
+agent-cli-lab console --snapshot --view graph --width 130 --height 30   # one text frame
+```
+
+`labs` (table with role, parent, state, model, activity sparkline), `graph` (commander -> managers -> workers drawn as nodes and edges, plus an output-activity sparkline) and `models`. Keys: `:labs` `:graph` `:models`, `/` filter, `enter` peek, `d` describe, `a` attach in a new window, `m` message, `ctrl-d` stop, `o` sort, `?` help. It is a TUI rather than a GUI on purpose: labs are PTYs that already live in terminal windows, it works over SSH and needs no extra runtime. For a browser view of the same graph (role shapes, activity, token/cost counters, peek/message/stop), see [`packages/lab-gui`](../lab-gui). Roles `builder`, `explorer` and `advisor` (opened together by `lab-team`, see the lab-commander skill) have their own colours in the console.
+
+The graph comes from `open --role ROLE --parent NAME [--model PROVIDER/ID]`. A session opened from inside another one is attached to it automatically (the hosted program gets `AGENT_CLI_LAB_SELF`).
+
+## All agents on this machine
+
+```sh
+agent-cli-lab agents                       # every agent instance: labs, Claude Code sessions (including the one you are in), Pi, opencode, codex, gemini, aider
+agent-cli-lab agents --json                # {generatedAt, agents:[...]} for scripts and GUIs
+agent-cli-lab agents --publish --watch 5   # also keep ~/.agent-cli-lab/agents.json fresh (atomic writes) for other readers
+agent-cli-lab console --view agents        # the same scan inside the console (key 4, or :agents)
+```
+
+Discovery is read-only and does not need the labs to cooperate: the process table finds every agent program and every lab host (the host's command line carries the lab's name, role, parent and model, in the current and the older `host -s NAME` form); `~/.claude/sessions/<pid>.json` gives each Claude Code session's id, status and directory, which is how the session you are typing in is found and marked; a transcript tail supplies the model, the token count and a short, redacted last message; a lab's own screen supplies working/asking/stalled and Pi's context figure. Helper processes (a browser native host, `claude mcp`) are not agents. Nothing is sent to any agent.
+
 ## Platforms
 
 Linux, macOS and Windows (native, through ConPTY) are supported. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests all three; see [`specs/006-cross-platform.md`](specs/006-cross-platform.md) for what has been verified on each.

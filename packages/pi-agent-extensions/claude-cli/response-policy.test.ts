@@ -20,9 +20,9 @@ test("structured text guidance permits empty and complete answers without trunca
   assert.ok(!("minLength" in TEXT_OUTPUT_SCHEMA));
 });
 
-test("provider applies defaults after history and uses the text schema", () => {
+test("provider appends the bridge rules and response policy after Pi's prompt and uses the text schema", () => {
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-  assert.match(source, /text: TEXT_OUTPUT_SCHEMA/);
-  assert.ok(source.indexOf("appendParts.push(createToolBridgePrompt(tools), RESPONSE_POLICY)") > source.indexOf("buildHistory(history)"));
+  assert.match(source, /createOutputSchema\(tools, TEXT_OUTPUT_SCHEMA\)/);
+  assert.ok(source.indexOf("appendParts.push(createToolBridgePrompt(tools), RESPONSE_POLICY)") > source.indexOf("appendParts.push(systemPrompt)"));
   assert.match(source, /\{ text: "", toolCalls: capturedCalls \}/);
 });

@@ -32,6 +32,20 @@
       "toolchain": "python",
       "install": "uv sync",
       "test": "uv run pytest"
+    },
+    "lab-gui": {
+      "os": "ubuntu-latest",
+      "toolchain": "node",
+      "test": "npm test"
+    },
+    "lab-gui-desktop": {
+      "os": "macos-latest",
+      "toolchain": "node",
+      "dependsOn": [
+        "lab-gui"
+      ],
+      "install": "npm ci",
+      "test": "npm test"
     }
   }
 }

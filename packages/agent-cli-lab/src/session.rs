@@ -33,6 +33,36 @@ pub struct Entry {
     pub cols: u16,
     pub rows: u16,
     pub started_ms: u64,
+    /// Place in the lab hierarchy (`manager`, `worker`, ...). Left out, the console infers it from `parent`.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Name of the session that opened this one; the console draws the lab graph from it.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Model the program runs, as `provider/id`. Left out, the console reads it from `command`.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Entry {
+    /// The model: the recorded one, else `--provider P --model M` / `--model P/M` from the command line.
+    pub fn model_label(&self) -> Option<String> {
+        if let Some(model) = self.model.as_ref().filter(|model| !model.is_empty()) {
+            return Some(model.clone());
+        }
+        let value_after = |flag: &str| {
+            self.command
+                .iter()
+                .position(|word| word == flag)
+                .and_then(|at| self.command.get(at + 1))
+                .cloned()
+        };
+        let model = value_after("--model").or_else(|| value_after("-m"))?;
+        match value_after("--provider") {
+            Some(provider) if !model.contains('/') => Some(format!("{provider}/{model}")),
+            _ => Some(model),
+        }
+    }
 }
 
 /// A name is a file name and a socket name, so it stays to plain characters.
@@ -169,6 +199,9 @@ mod tests {
             cols: 150,
             rows: 40,
             started_ms,
+            role: None,
+            parent: None,
+            model: None,
         }
     }
 
@@ -263,6 +296,25 @@ mod tests {
             fs::read_dir(directory.path()).unwrap().next().is_none(),
             "no temporary file is left"
         );
+    }
+
+    #[test]
+    fn model_comes_from_the_record_or_the_command_line() {
+        let mut item = entry("m", 1);
+        assert_eq!(item.model_label(), None);
+        item.command = ["pi", "--provider", "muse", "--model", "muse"].map(String::from).to_vec();
+        assert_eq!(item.model_label().as_deref(), Some("muse/muse"));
+        item.command = ["pi", "--model", "opencode-cli/opencode/gpt-6-luna"].map(String::from).to_vec();
+        assert_eq!(item.model_label().as_deref(), Some("opencode-cli/opencode/gpt-6-luna"));
+        item.model = Some("claude-cli/claude-haiku-5-5".into());
+        assert_eq!(item.model_label().as_deref(), Some("claude-cli/claude-haiku-5-5"));
+    }
+
+    #[test]
+    fn an_old_registry_file_without_graph_fields_still_loads() {
+        let old = r#"{"name":"o","pid":1,"socket":"/s/o.sock","command":["pi"],"cols":80,"rows":24,"started_ms":1}"#;
+        let item: Entry = serde_json::from_str(old).unwrap();
+        assert!(item.role.is_none() && item.parent.is_none() && item.model.is_none());
     }
 
     #[test]

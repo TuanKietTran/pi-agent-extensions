@@ -9,3 +9,4 @@ dist/
 !.env.example
 .dev.vars
 *.log
+.node-data/

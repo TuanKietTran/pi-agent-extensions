@@ -68,3 +68,8 @@ These are illustrative environment settings only; they were not executed and do 
 ## Deployment boundary
 
 The coordinator is a single authority for a room unless you deliberately configure supported Durable Object infrastructure. Historical celld/OrbStack notes in [infra/README.md](infra/README.md) are not a portable default or evidence of a currently running fleet. No hosted service, cloud-feature parity, cross-region failover, or production readiness is implied. Synthetic fixtures only; no live-provider or physical multi-host verification. The six-high-advisory dependency issue remains a public-deployment blocker; see [dependency audit](docs/DEPENDENCY-AUDIT.md).
+
+## Two-node PoC on AWS + Codespaces, and `gh-accounts`
+
+A portable Node server mode (`npm run serve`, `npm run node:up`) lets one room be shared by an AWS node and a GitHub Codespace node, with MOCK agents; the Cloudflare path above is unchanged. See [docs/AWS-CODESPACES.md](docs/AWS-CODESPACES.md) for the design, the Codespace steps (`.devcontainer/distributed-agent-chat/`), `deploy/aws/` (deploy, verify, teardown) and the `gh-accounts` multi-account helper (`npm run gh-accounts -- list`).
+
