@@ -41,6 +41,16 @@ This process can type into and stop real terminals, so:
 - the page's content-security policy allows only its own files, with no inline script or style, and screen text is inserted as text, never as HTML;
 - no external service is contacted and nothing is sent anywhere. The server only polls the CLI while a page is open (about every 1.5 s) and goes idle 20 s after the last viewer leaves.
 
+## Native clients (phone and desktop)
+
+Loopback stays the default. To let a phone or a native desktop app see the board, opt in:
+
+```
+lab-gui --listen <private-address> [--allow-control] [--new-key]
+```
+
+This is a separate mode with its own guards: clients send the saved pairing key as `Authorization: Bearer <key>` (cookies and the web page are not served), they are read-only unless `--allow-control` is given, `attach` is never available, and 20 wrong keys lock an address out for a minute. The key lives in a private file (`~/.config/lab-gui/remote-key`, mode 600) so a paired device stays paired; `--new-key` replaces it. The connection is plain HTTP, so use a private network address (a VPN interface) or an SSH tunnel, never a public one. Endpoints, fields and fixtures are in [docs/CLIENT-API.md](docs/CLIENT-API.md).
+
 ## Layout
 
 ```

@@ -8,6 +8,10 @@
 //  - every POST also needs the per-launch token the page was served with, a JSON body and, when the
 //    browser sends one, a same-origin Origin header;
 //  - nothing is fetched from or sent to any other host, and the page's CSP forbids it too.
+// Native apps authenticate with `Authorization: Bearer <key>` instead of the cookie. A browser never
+// adds that header on its own and this server sends no CORS headers, so the bearer path needs no
+// CSRF token. In remote mode (bound beyond loopback) ONLY the bearer is accepted, the web page is
+// not served, "attach" is refused, and send/key/stop stay off unless control was switched on.
 import { readFile } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import { dirname, extname, join, normalize, sep } from "node:path";
@@ -55,7 +59,18 @@ async function readJson(req) {
  * @param {{cli: ReturnType<import('./cli.mjs').createCli>, monitor: ReturnType<import('./monitor.mjs').createMonitor>,
  *          key: string, token: string, port: () => number, pollMs?: number, idleMs?: number}} options
  */
-export function createApp({ cli, monitor, key, token, port, pollMs = 1500, idleMs = 20000, themesDir = THEMES_DIR }) {
+export function createApp({ cli, monitor, key, token, port, pollMs = 1500, idleMs = 20000, themesDir = THEMES_DIR, remote = null, now = Date.now }) {
+  const failures = new Map(); // address -> {count, since, until}
+  const throttled = (addr) => (failures.get(addr)?.until ?? 0) > now();
+  const failed = (addr) => {
+    const f = failures.get(addr);
+    const entry = !f || now() - f.since > 60000 ? { count: 0, since: now(), until: 0 } : f;
+    entry.count += 1;
+    if (entry.count >= 20) entry.until = now() + 60000;
+    failures.set(addr, entry);
+    if (failures.size > 512) failures.delete(failures.keys().next().value);
+  };
+  const bearerKey = (req) => /^Bearer (\S+)$/i.exec(String(req.headers.authorization ?? ""))?.[1];
   const allowedHosts = () => new Set([`127.0.0.1:${port()}`, `localhost:${port()}`, `[::1]:${port()}`]);
   let lastDemand = 0;
   let loop;
@@ -105,19 +120,28 @@ export function createApp({ cli, monitor, key, token, port, pollMs = 1500, idleM
   };
 
   async function handle(req, res) {
-    if (!allowedHosts().has(String(req.headers.host ?? "").toLowerCase())) return sendJson(res, 421, { error: "unexpected host" });
+    if (!remote && !allowedHosts().has(String(req.headers.host ?? "").toLowerCase())) return sendJson(res, 421, { error: "unexpected host" });
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
+    const addr = req.socket?.remoteAddress ?? "?";
+    if (throttled(addr)) return sendJson(res, 429, { error: "too many failed attempts; wait a minute" });
 
     // First visit: trade the key in the URL for a cookie, then drop it from the address bar.
-    if (req.method === "GET" && path === "/" && url.searchParams.has("key")) {
+    if (!remote && req.method === "GET" && path === "/" && url.searchParams.has("key")) {
+      if (!sameToken(url.searchParams.get("key"), key)) failed(addr);
       if (!sameToken(url.searchParams.get("key"), key)) return sendJson(res, 401, { error: "wrong key; open the URL printed by lab-gui" });
       res.writeHead(302, { location: "/", "set-cookie": `${COOKIE}=${key}; HttpOnly; SameSite=Strict; Path=/`, "cache-control": "no-store" });
       return res.end();
     }
-    if (!sameToken(cookieKey(req), key)) return sendJson(res, 401, { error: "open the URL printed by lab-gui (it carries the launch key)" });
+    const viaBearer = sameToken(bearerKey(req), key);
+    if (!viaBearer && (remote || !sameToken(cookieKey(req), key))) {
+      failed(addr);
+      return sendJson(res, 401, { error: remote ? "send the pairing key as Authorization: Bearer <key>" : "open the URL printed by lab-gui (it carries the launch key)" });
+    }
 
-    if (req.method === "GET" && !path.startsWith("/api/")) return serveStatic(res, path);
+    if (req.method === "GET" && !path.startsWith("/api/")) return remote ? sendJson(res, 404, { error: "not found" }) : serveStatic(res, path);
+
+    if (req.method === "GET" && path === "/api/info") return sendJson(res, 200, { name: "lab-gui", api: 1, remote: Boolean(remote), control: remote ? Boolean(remote.control) : true, attach: !remote });
 
     if (req.method === "GET" && path === "/api/labs") {
       demand();
@@ -150,9 +174,13 @@ export function createApp({ cli, monitor, key, token, port, pollMs = 1500, idleM
     }
 
     if (req.method !== "POST" || action === "screen") return sendJson(res, 405, { error: "method not allowed" });
-    if (!sameToken(req.headers["x-lab-gui-token"], token)) return sendJson(res, 403, { error: "missing or wrong token" });
-    const origin = req.headers.origin;
-    if (origin && !new Set([...allowedHosts()].map((h) => `http://${h}`)).has(origin.toLowerCase())) return sendJson(res, 403, { error: "cross-origin request refused" });
+    if (remote && !remote.control) return sendJson(res, 403, { error: "remote control is off; restart lab-gui with --allow-control to send, press keys or stop" });
+    if (remote && action === "attach") return sendJson(res, 403, { error: "attach opens a window on the host; not available remotely" });
+    if (!viaBearer) {
+      if (!sameToken(req.headers["x-lab-gui-token"], token)) return sendJson(res, 403, { error: "missing or wrong token" });
+      const origin = req.headers.origin;
+      if (origin && !new Set([...allowedHosts()].map((h) => `http://${h}`)).has(origin.toLowerCase())) return sendJson(res, 403, { error: "cross-origin request refused" });
+    }
     if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) return sendJson(res, 415, { error: "content-type must be application/json" });
 
     const body = await readJson(req);
