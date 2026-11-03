@@ -136,7 +136,7 @@ export function createMonitor({ cli, historyLen = 48, usageEveryMs = 6000, goneK
             kind: classify(entry.role, children.length > 0, Boolean(parent)),
             parent,
             children,
-            state: status ? status.state ?? entry.state ?? "working" : "gone",
+            state: status ? status.state ?? entry.state ?? "working" : entry.state ?? "stalled",
             model: entry.model ?? null,
             modelLabel: model.label,
             modelFamily: model.family,

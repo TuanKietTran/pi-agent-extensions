@@ -144,3 +144,13 @@ dialog p { margin-top: 8px; color: var(--muted); }
   .screen { height: 150px; }
   .meta { margin: 8px 0; }
 }
+
+.theme-list { list-style: none; margin: 12px 0 0; padding: 4px; max-height: min(60vh, 460px); overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--raised); }
+.theme-list li { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.theme-list li[aria-selected="true"] { background: color-mix(in srgb, var(--primary) 22%, transparent); outline: 1px solid var(--primary); }
+.theme-list .t-name { flex: 1; }
+.theme-list .t-mode { color: var(--muted); font-size: 12px; }
+.theme-list .t-now { color: var(--primary); font-size: 12px; }
+.theme-list .chips-strip { display: inline-flex; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+.theme-list .chips-strip i { width: 14px; height: 14px; display: block; }
+dialog#themes { width: min(420px, calc(100vw - 32px)); }

@@ -55,6 +55,8 @@ export function createCli({ bin = process.env.AGENT_CLI_LAB_BIN || "agent-cli-la
     send: async (name, text, { enter = true } = {}) => {
       assertName(name);
       if (typeof text !== "string" || text.length > 20000) throw new CliError("text must be a string of at most 20000 characters", { status: 400 });
+      // Escape sequences and carriage returns would press keys that the key allow-list is there to limit.
+      if (/[\x00-\x08\x0b-\x1f\x7f]/.test(text)) throw new CliError("text may not contain control characters", { status: 400 });
       await run(["send", "-n", name, "--paced", ...(enter ? ["-e"] : []), "--", text], { timeout: 60000 });
     },
     key: async (name, key) => {

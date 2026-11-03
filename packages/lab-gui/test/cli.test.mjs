@@ -38,6 +38,14 @@ test("invalid names and keys never reach the binary", async () => {
   assert.deepEqual(calls[0].args, ["key", "-n", "w1", "Enter"]);
 });
 
+test("typed text cannot smuggle control keys", async () => {
+  const { calls, cli } = recorder();
+  for (const bad of ["\x1b[A", "a\rb", "x\x03", "nul\x00"]) await assert.rejects(cli.send("w1", bad), (e) => e.status === 400, JSON.stringify(bad));
+  assert.equal(calls.length, 0);
+  await cli.send("w1", "line one\nline two\tindented");
+  assert.equal(calls.length, 1);
+});
+
 test("screen tail is clamped and JSON output is parsed", async () => {
   const { calls, cli } = recorder('{"lines":["x"]}');
   assert.deepEqual(await cli.screen("w1", 99999), { lines: ["x"] });

@@ -37,16 +37,17 @@ function openBrowser(url) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
-const token = randomBytes(24).toString("hex");
+const key = randomBytes(24).toString("hex"); // goes into the printed URL, becomes a cookie
+const token = randomBytes(24).toString("hex"); // embedded in the page, required on every POST
 let boundPort = opts.port;
 const cli = createCli();
-const app = createApp({ cli, monitor: createMonitor({ cli }), token, port: () => boundPort });
+const app = createApp({ cli, monitor: createMonitor({ cli }), key, token, port: () => boundPort });
 const server = createServer(app.handler);
 
 server.listen(opts.port, HOST, () => {
   boundPort = server.address().port;
-  const url = `http://${HOST}:${boundPort}/`;
-  console.log(`lab-gui: ${url}  (Ctrl-C to stop)`);
+  const url = `http://${HOST}:${boundPort}/?key=${key}`;
+  console.log(`lab-gui: ${url}  (Ctrl-C to stop; the link carries this launch's key)`);
   if (opts.open) openBrowser(url);
 });
 server.on("error", (error) => {

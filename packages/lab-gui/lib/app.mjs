@@ -2,7 +2,10 @@
 // Guards, because this process can type into and stop real terminals:
 //  - the server binds 127.0.0.1 only (see server.mjs) and every request must carry a loopback Host
 //    header, which defeats DNS rebinding;
-//  - every POST needs the per-launch token the page was served with, a JSON body and, when the
+//  - every request needs the per-launch key: the URL the server prints carries it once, it is
+//    exchanged for an HttpOnly SameSite=Strict cookie, and nothing (page, API, event stream) is
+//    served without that cookie, so other local users and other websites get nothing;
+//  - every POST also needs the per-launch token the page was served with, a JSON body and, when the
 //    browser sends one, a same-origin Origin header;
 //  - nothing is fetched from or sent to any other host, and the page's CSP forbids it too.
 import { readFile } from "node:fs/promises";
@@ -10,9 +13,11 @@ import { timingSafeEqual } from "node:crypto";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOWED_KEYS, CliError, isValidName } from "./cli.mjs";
+import { loadThemes } from "./themes.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(here, "..", "public");
+const THEMES_DIR = join(here, "..", "themes");
 const MAX_BODY = 64 * 1024;
 const TYPES = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml" };
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -48,9 +53,9 @@ async function readJson(req) {
 
 /**
  * @param {{cli: ReturnType<import('./cli.mjs').createCli>, monitor: ReturnType<import('./monitor.mjs').createMonitor>,
- *          token: string, port: () => number, pollMs?: number, idleMs?: number}} options
+ *          key: string, token: string, port: () => number, pollMs?: number, idleMs?: number}} options
  */
-export function createApp({ cli, monitor, token, port, pollMs = 1500, idleMs = 20000 }) {
+export function createApp({ cli, monitor, key, token, port, pollMs = 1500, idleMs = 20000, themesDir = THEMES_DIR }) {
   const allowedHosts = () => new Set([`127.0.0.1:${port()}`, `localhost:${port()}`, `[::1]:${port()}`]);
   let lastDemand = 0;
   let loop;
@@ -90,10 +95,27 @@ export function createApp({ cli, monitor, token, port, pollMs = 1500, idleMs = 2
     res.end(body);
   }
 
+  const COOKIE = "lab_gui";
+  const cookieKey = (req) => {
+    for (const part of String(req.headers.cookie ?? "").split(";")) {
+      const [name, ...rest] = part.trim().split("=");
+      if (name === COOKIE) return rest.join("=");
+    }
+    return undefined;
+  };
+
   async function handle(req, res) {
     if (!allowedHosts().has(String(req.headers.host ?? "").toLowerCase())) return sendJson(res, 421, { error: "unexpected host" });
     const url = new URL(req.url ?? "/", "http://localhost");
     const path = url.pathname;
+
+    // First visit: trade the key in the URL for a cookie, then drop it from the address bar.
+    if (req.method === "GET" && path === "/" && url.searchParams.has("key")) {
+      if (!sameToken(url.searchParams.get("key"), key)) return sendJson(res, 401, { error: "wrong key; open the URL printed by lab-gui" });
+      res.writeHead(302, { location: "/", "set-cookie": `${COOKIE}=${key}; HttpOnly; SameSite=Strict; Path=/`, "cache-control": "no-store" });
+      return res.end();
+    }
+    if (!sameToken(cookieKey(req), key)) return sendJson(res, 401, { error: "open the URL printed by lab-gui (it carries the launch key)" });
 
     if (req.method === "GET" && !path.startsWith("/api/")) return serveStatic(res, path);
 
@@ -102,6 +124,9 @@ export function createApp({ cli, monitor, token, port, pollMs = 1500, idleMs = 2
       const snap = monitor.snapshot();
       return sendJson(res, 200, snap.at ? snap : await monitor.tick());
     }
+
+    // Read from disk on every request, like Omarchy's theme list: a theme folder dropped in shows up at once.
+    if (req.method === "GET" && path === "/api/themes") return sendJson(res, 200, { themes: await loadThemes(themesDir) });
 
     if (req.method === "GET" && path === "/api/stream") {
       demand();

@@ -19,7 +19,7 @@
   <div class="chips" id="summary" role="status" aria-live="polite" aria-label="Fleet summary"></div>
   <div class="tools">
     <label class="filter"><span class="sr">Filter labs</span><input id="filter" type="search" placeholder="Filter  ( / )" autocomplete="off" spellcheck="false"></label>
-    <button type="button" id="theme" class="btn icon" aria-label="Switch colour theme" title="Switch theme (t)"><span aria-hidden="true">◐</span></button>
+    <button type="button" id="theme" class="btn icon" aria-label="Choose a theme" title="Themes (t); next theme (Shift+T)"><span aria-hidden="true">◐</span></button>
     <button type="button" id="help" class="btn icon" aria-label="Keyboard shortcuts" title="Shortcuts (?)"><span aria-hidden="true">?</span></button>
   </div>
 </header>
@@ -75,6 +75,13 @@
   </form>
 </dialog>
 
+<dialog id="themes" aria-labelledby="th-title">
+  <h2 id="th-title">Theme</h2>
+  <p class="muted">Arrow keys preview, Enter keeps one, Esc goes back.</p>
+  <ul id="theme-list" class="theme-list" role="listbox" tabindex="0" aria-label="Themes"></ul>
+  <div class="row end"><button type="button" id="th-cancel" class="btn">Cancel</button></div>
+</dialog>
+
 <dialog id="shortcuts" aria-labelledby="s-title">
   <form method="dialog">
     <h2 id="s-title">Keyboard</h2>
@@ -84,7 +91,8 @@
       <dt><kbd>Esc</kbd></dt><dd>close details</dd>
       <dt><kbd>/</kbd></dt><dd>filter labs</dd>
       <dt><kbd>m</kbd></dt><dd>message the open lab</dd>
-      <dt><kbd>t</kbd></dt><dd>switch theme</dd>
+      <dt><kbd>t</kbd></dt><dd>choose a theme (preview with arrows)</dd>
+      <dt><kbd>Shift</kbd> <kbd>T</kbd></dt><dd>next theme</dd>
     </dl>
     <div class="row end"><button class="btn primary" autofocus>Close</button></div>
   </form>

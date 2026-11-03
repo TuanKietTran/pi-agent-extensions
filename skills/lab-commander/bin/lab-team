@@ -44,7 +44,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$prefix" ] || { echo "lab-team: --prefix is required" >&2; usage; }
-case "$prefix" in *[!A-Za-z0-9._-]*) echo "lab-team: prefix may only use letters, digits, . _ -" >&2; exit 2 ;; esac
+case "$prefix" in
+  "" | [!A-Za-z0-9]* | *[!A-Za-z0-9._-]*) echo "lab-team: prefix must start with a letter or digit and use only letters, digits, . _ -" >&2; exit 2 ;;
+esac
+[ ${#prefix} -le 29 ] || { echo "lab-team: prefix is limited to 29 characters (lab names are 40 at most)" >&2; exit 2; }
 
 wants() {
   case ",$only," in *",$1,"*) return 0 ;; *) return 1 ;; esac
@@ -60,8 +63,12 @@ open_lab() { # role model parent
   role=$1 model=$2 lab_parent=$3
   name="$prefix-$role"
   set -- "$LAB_BIN" open -n "$name" --role "$role" --model "claude-cli/$model" --cwd "$cwd"
-  # shellcheck disable=SC2086 # word splitting of the extra arguments is intended
-  [ -z "${LAB_TEAM_OPEN_ARGS:-}" ] || set -- "$@" $LAB_TEAM_OPEN_ARGS
+  if [ -n "${LAB_TEAM_OPEN_ARGS:-}" ]; then
+    set -f # split the extra arguments on spaces, but never expand globs
+    # shellcheck disable=SC2086
+    set -- "$@" $LAB_TEAM_OPEN_ARGS
+    set +f
+  fi
   [ -z "$lab_parent" ] || set -- "$@" --parent "$lab_parent"
   set -- "$@" -- env
   for var in $UNSET; do set -- "$@" -u "$var"; done

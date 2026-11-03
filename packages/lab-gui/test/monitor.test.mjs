@@ -110,3 +110,14 @@ test("the footer is only re-read after the usage interval", async () => {
   await monitor.tick();
   assert.equal(cli.calls.filter((c) => c[0] === "screen" && c[1] === "lead").length, 2);
 });
+
+test("a lab whose status call fails but is still listed keeps its listed state instead of being called gone", async () => {
+  const cli = createFakeCli(TEAM);
+  const monitor = createMonitor({ cli });
+  cli.status = async () => {
+    throw new Error("socket busy");
+  };
+  const snap = await monitor.tick();
+  assert.equal(snap.totals.gone, 0);
+  assert.equal(snap.labs.find((l) => l.name === "lead").state, "working");
+});

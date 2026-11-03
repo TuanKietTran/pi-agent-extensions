@@ -55,23 +55,124 @@ async function api(path, body) {
 }
 
 // ---------- theme ----------
-function applyTheme(theme) {
-  if (theme) document.documentElement.dataset.theme = theme;
+// Same idea as Omarchy: a theme is a palette (themes/<name>/colors.toml); picking one rewrites the
+// page's CSS variables in one go. "System", "Default dark" and "Default light" are built in.
+import { themeVars } from "/theme.js";
+
+const BUILT_IN = [
+  { name: "system", title: "System", mode: "follows OS", colors: null },
+  { name: "default-dark", title: "Default dark", mode: "dark", colors: null },
+  { name: "default-light", title: "Default light", mode: "light", colors: null },
+];
+const themeState = { all: BUILT_IN, current: "system" };
+
+function clearThemeVars() {
+  const root = document.documentElement;
+  for (let i = root.style.length - 1; i >= 0; i--) {
+    const prop = root.style[i];
+    if (prop.startsWith("--")) root.style.removeProperty(prop);
+  }
+}
+
+function applyTheme(name, remember = false) {
+  const theme = themeState.all.find((t) => t.name === name) ?? BUILT_IN[0];
+  clearThemeVars();
+  if (theme.colors) {
+    const vars = themeVars(theme.colors);
+    for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v);
+    document.documentElement.dataset.theme = theme.mode === "light" ? "light" : "dark";
+  } else if (theme.name === "default-dark") document.documentElement.dataset.theme = "dark";
+  else if (theme.name === "default-light") document.documentElement.dataset.theme = "light";
   else delete document.documentElement.dataset.theme;
+  themeState.current = theme.name;
+  if (remember) {
+    try {
+      localStorage.setItem("lab-gui-theme", theme.name);
+      localStorage.setItem("lab-gui-theme-colors", theme.colors ? JSON.stringify({ mode: theme.mode, colors: theme.colors }) : "");
+    } catch { /* storage may be blocked */ }
+  }
 }
-function currentTheme() {
-  return document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+
+// First paint: reuse the saved palette before the theme list has been fetched.
+try {
+  const saved = localStorage.getItem("lab-gui-theme") ?? "system";
+  const cached = localStorage.getItem("lab-gui-theme-colors");
+  if (cached) themeState.all = [...BUILT_IN, { name: saved, title: saved, mode: JSON.parse(cached).mode, colors: JSON.parse(cached).colors }];
+  applyTheme(saved);
+} catch { /* ignore */ }
+
+async function loadThemeList() {
+  try {
+    const { themes } = await api("/api/themes");
+    themeState.all = [...BUILT_IN, ...themes];
+    applyTheme(themeState.current, false); // pick up edits to the palette on disk
+  } catch { /* built-ins still work */ }
 }
-try { applyTheme(localStorage.getItem("lab-gui-theme")); } catch { /* storage may be blocked */ }
-$("theme").addEventListener("click", () => {
-  const next = currentTheme() === "dark" ? "light" : "dark";
-  applyTheme(next);
-  try { localStorage.setItem("lab-gui-theme", next); } catch { /* ignore */ }
+
+function swatches(theme) {
+  const c = theme.colors;
+  const strip = h("span", { class: "chips-strip", "aria-hidden": "true" });
+  const list = c ? [c.background, c.accent, c.red, c.green, c.yellow, c.cyan, c.magenta] : theme.name === "default-light" ? ["#f4f6f8", "#0b5fd6", "#c4212f", "#1a7f37", "#8a5a00", "#00717f", "#5f3bc4"] : ["#0e1116", "#2f81f7", "#f85149", "#3fb950", "#e3b341", "#4dd0e1", "#b79cff"];
+  for (const color of list) { const i = h("i"); i.style.background = color; strip.append(i); }
+  return strip;
+}
+
+let pickerBase = "system";
+let pickerActive = "system";
+function paintPicker() {
+  const ul = $("theme-list");
+  ul.replaceChildren(...themeState.all.map((t) => h("li", { role: "option", id: `theme-${t.name}`, "data-name": t.name, "aria-selected": String(t.name === pickerActive), onclick: () => { pickerActive = t.name; applyTheme(t.name, true); pickerBase = t.name; $("themes").close(); } },
+    swatches(t), h("span", { class: "t-name" }, t.title), h("span", { class: "t-mode" }, t.mode), t.name === pickerBase ? h("span", { class: "t-now" }, "current") : null)));
+  ul.setAttribute("aria-activedescendant", `theme-${pickerActive}`);
+  ul.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+function movePicker(delta, absolute) {
+  const names = themeState.all.map((t) => t.name);
+  let i = absolute !== undefined ? absolute : names.indexOf(pickerActive) + delta;
+  i = Math.max(0, Math.min(names.length - 1, i));
+  pickerActive = names[i];
+  applyTheme(pickerActive); // live preview, not remembered until Enter
+  paintPicker();
+}
+function openPicker() {
+  pickerBase = themeState.current;
+  pickerActive = themeState.current;
+  paintPicker();
+  $("themes").showModal();
+  $("theme-list").focus();
+}
+$("theme").addEventListener("click", openPicker);
+$("th-cancel").addEventListener("click", () => $("themes").close());
+$("theme-list").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); movePicker(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); movePicker(-1); }
+  else if (e.key === "Home") { e.preventDefault(); movePicker(0, 0); }
+  else if (e.key === "End") { e.preventDefault(); movePicker(0, themeState.all.length - 1); }
+  else if (e.key === "Enter") { e.preventDefault(); applyTheme(pickerActive, true); pickerBase = pickerActive; $("themes").close(); }
+  else if (e.key.length === 1 && /\S/.test(e.key)) {
+    const hit = themeState.all.findIndex((t, idx) => idx > themeState.all.findIndex((x) => x.name === pickerActive) && t.title.toLowerCase().startsWith(e.key.toLowerCase()));
+    const first = themeState.all.findIndex((t) => t.title.toLowerCase().startsWith(e.key.toLowerCase()));
+    if (hit >= 0 || first >= 0) movePicker(0, hit >= 0 ? hit : first);
+  }
 });
+// Esc, or any other way of closing without choosing, goes back to the theme that was current.
+$("themes").addEventListener("close", () => { if (themeState.current !== pickerBase) applyTheme(pickerBase); });
+function nextTheme() {
+  const names = themeState.all.map((t) => t.name);
+  const next = names[(names.indexOf(themeState.current) + 1) % names.length];
+  applyTheme(next, true);
+  announce(`Theme ${themeState.all.find((t) => t.name === next)?.title}`);
+}
 
 // ---------- layout ----------
 function layoutForest(labs) {
   const byName = new Map(labs.map((l) => [l.name, l]));
+  // A parent cycle (a lab opened under its own descendant) has no root: break it at its first member.
+  const reachable = new Set();
+  const mark = (lab) => { if (reachable.has(lab.name)) return; reachable.add(lab.name); labs.filter((c) => c.parent === lab.name).forEach(mark); };
+  labs.filter((l) => !l.parent || !byName.has(l.parent)).forEach(mark);
+  const orphans = labs.filter((l) => !reachable.has(l.name));
+  for (const lab of orphans) { if (!reachable.has(lab.name)) { lab.parent = null; mark(lab); } }
   const roots = labs.filter((l) => !l.parent || !byName.has(l.parent));
   const order = [];
   let row = 0;
@@ -360,6 +461,7 @@ document.addEventListener("keydown", (e) => {
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === "/") { e.preventDefault(); $("filter").focus(); }
   else if (e.key === "t") $("theme").click();
+  else if (e.key === "T") nextTheme();
   else if (e.key === "?") $("shortcuts").showModal();
   else if (e.key === "m" && state.selected) { e.preventDefault(); $("p-text").focus(); }
 });
@@ -390,6 +492,7 @@ function onSnapshot(snap) {
     if (before && before !== lab.state && ["asking", "stalled", "gone"].includes(lab.state)) announce(`${lab.name} is now ${lab.state}`);
     state.lastStates.set(lab.name, lab.state);
   }
+  for (const name of [...state.lastStates.keys()]) if (!snap.labs.some((l) => l.name === name)) state.lastStates.delete(name);
   state.snap = snap;
   renderAll();
 }
@@ -406,6 +509,7 @@ function connect() {
   source.onerror = () => { state.connected = false; if (state.snap) renderSummary(state.snap); };
 }
 
+loadThemeList();
 const initial = decodeURIComponent((location.hash.match(/lab=([^&]+)/) ?? [])[1] ?? "");
 if (initial) state.selected = initial;
 tickNow().then(() => { if (state.selected) pollScreen(); connect(); });

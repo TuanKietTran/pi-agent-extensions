@@ -6,12 +6,14 @@ import { createMonitor } from "../lib/monitor.mjs";
 import { TEAM, createFakeCli } from "./fakes.mjs";
 
 const TOKEN = "t0ken";
+const KEY = "launch-key";
+const COOKIE = `lab_gui=${KEY}`;
 
 async function boot(initial = TEAM) {
   const cli = createFakeCli(initial);
   const monitor = createMonitor({ cli });
   let port = 0;
-  const app = createApp({ cli, monitor, token: TOKEN, port: () => port, pollMs: 20, idleMs: 200 });
+  const app = createApp({ cli, monitor, key: KEY, token: TOKEN, port: () => port, pollMs: 20, idleMs: 200 });
   const server = createServer(app.handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = server.address().port;
@@ -20,9 +22,9 @@ async function boot(initial = TEAM) {
     cli,
     base,
     port,
-    request: (path, init = {}) => fetch(base + path, init),
+    request: (path, init = {}) => fetch(base + path, { ...init, headers: { cookie: COOKIE, ...init.headers } }),
     post: (path, body, headers = {}) =>
-      fetch(base + path, { method: "POST", headers: { "content-type": "application/json", "x-lab-gui-token": TOKEN, ...headers }, body: JSON.stringify(body) }),
+      fetch(base + path, { method: "POST", headers: { cookie: COOKIE, "content-type": "application/json", "x-lab-gui-token": TOKEN, ...headers }, body: JSON.stringify(body) }),
     close: async () => {
       app.close();
       server.closeAllConnections();
@@ -76,7 +78,7 @@ test("a request with a foreign Host header is refused (DNS rebinding)", async ()
   try {
     const res = await new Promise((resolve, reject) => {
       import("node:http").then(({ request }) => {
-        const r = request({ host: "127.0.0.1", port: s.port, path: "/api/labs", headers: { host: "evil.example" } }, resolve);
+        const r = request({ host: "127.0.0.1", port: s.port, path: "/api/labs", headers: { host: "evil.example", cookie: COOKIE } }, resolve);
         r.on("error", reject);
         r.end();
       });
@@ -91,11 +93,11 @@ test("a request with a foreign Host header is refused (DNS rebinding)", async ()
 test("POST needs the token, a JSON body and a same-origin Origin", async () => {
   const s = await boot();
   try {
-    const noToken = await fetch(`${s.base}/api/labs/lead/send`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    const noToken = await fetch(`${s.base}/api/labs/lead/send`, { method: "POST", headers: { cookie: COOKIE, "content-type": "application/json" }, body: "{}" });
     assert.equal(noToken.status, 403);
     assert.equal((await s.post("/api/labs/lead/send", { text: "x" }, { "x-lab-gui-token": "wrong" })).status, 403);
     assert.equal((await s.post("/api/labs/lead/send", { text: "x" }, { origin: "https://evil.example" })).status, 403);
-    const form = await fetch(`${s.base}/api/labs/lead/send`, { method: "POST", headers: { "content-type": "text/plain", "x-lab-gui-token": TOKEN }, body: "text=x" });
+    const form = await fetch(`${s.base}/api/labs/lead/send`, { method: "POST", headers: { cookie: COOKIE, "content-type": "text/plain", "x-lab-gui-token": TOKEN }, body: "text=x" });
     assert.equal(form.status, 415);
     assert.equal(s.cli.calls.filter((c) => c[0] === "send").length, 0);
     const ok = await s.post("/api/labs/lead/send", { text: "hello" }, { origin: s.base });
@@ -148,7 +150,7 @@ test("event stream sends a snapshot immediately and then on every poll", async (
   const s = await boot();
   const controller = new AbortController();
   try {
-    const res = await fetch(`${s.base}/api/stream`, { signal: controller.signal });
+    const res = await fetch(`${s.base}/api/stream`, { signal: controller.signal, headers: { cookie: COOKIE } });
     assert.equal(res.headers.get("content-type"), "text/event-stream");
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -176,6 +178,60 @@ test("polling stops when nobody is watching", async () => {
     await new Promise((r) => setTimeout(r, 200));
     assert.equal(s.cli.calls.length, before);
     assert.deepEqual(sessionsListed, []);
+  } finally {
+    await s.close();
+  }
+});
+
+test("nothing is served without the launch key cookie: page, API, stream and screens", async () => {
+  const s = await boot();
+  try {
+    for (const path of ["/", "/app.js", "/style.css", "/api/labs", "/api/stream", "/api/labs/lead/screen"]) {
+      const res = await fetch(s.base + path);
+      assert.equal(res.status, 401, path);
+      await res.arrayBuffer();
+    }
+    const wrong = await fetch(s.base + "/api/labs", { headers: { cookie: "lab_gui=nope" } });
+    assert.equal(wrong.status, 401);
+    const post = await fetch(`${s.base}/api/labs/lead/stop`, { method: "POST", headers: { "content-type": "application/json", "x-lab-gui-token": TOKEN }, body: '{"confirm":"lead"}' });
+    assert.equal(post.status, 401);
+    assert.ok(s.cli.sessions.has("lead"));
+  } finally {
+    await s.close();
+  }
+});
+
+test("the launch URL key becomes an HttpOnly SameSite=Strict cookie and a redirect to a clean URL", async () => {
+  const s = await boot();
+  try {
+    const bad = await fetch(`${s.base}/?key=wrong`, { redirect: "manual" });
+    assert.equal(bad.status, 401);
+    const ok = await fetch(`${s.base}/?key=${KEY}`, { redirect: "manual" });
+    assert.equal(ok.status, 302);
+    assert.equal(ok.headers.get("location"), "/");
+    const cookie = ok.headers.get("set-cookie");
+    assert.match(cookie, /^lab_gui=launch-key;/);
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Strict/);
+    const page = await fetch(`${s.base}/`, { headers: { cookie: cookie.split(";")[0] } });
+    assert.equal(page.status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
+test("themes are listed from disk behind the launch key, and the shared colour module is served", async () => {
+  const s = await boot();
+  try {
+    assert.equal((await fetch(`${s.base}/api/themes`)).status, 401);
+    const { themes } = await (await s.request("/api/themes")).json();
+    assert.ok(themes.length >= 20);
+    const tokyo = themes.find((t) => t.name === "tokyo-night");
+    assert.equal(tokyo.mode, "dark");
+    assert.equal(tokyo.colors.background, "#1a1b26");
+    const mod = await s.request("/theme.js");
+    assert.equal(mod.status, 200);
+    assert.match(mod.headers.get("content-type"), /javascript/);
   } finally {
     await s.close();
   }

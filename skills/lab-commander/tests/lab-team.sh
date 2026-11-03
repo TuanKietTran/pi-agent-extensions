@@ -48,5 +48,8 @@ PATH="$root/bin:$PATH" "$here/../bin/lab-team" down -p t1
 : > "$LAB_TEAM_CALLS"
 if PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p 'bad name' 2>/dev/null; then exit 1; fi
 if PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p ok --only wizard 2>/dev/null; then exit 1; fi
+if PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p -x 2>/dev/null; then exit 1; fi
+if PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p .hidden 2>/dev/null; then exit 1; fi
+if PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p aaaaaaaaaabbbbbbbbbbccccccccccd 2>/dev/null; then exit 1; fi
 [ ! -s "$LAB_TEAM_CALLS" ]
 echo ok
