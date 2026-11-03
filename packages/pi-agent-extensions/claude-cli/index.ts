@@ -58,6 +58,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClaudeStreamInput } from "./media.ts";
 import { startMcpServer, type McpHandle } from "./mcp.ts";
 import { RESPONSE_POLICY, TEXT_OUTPUT_SCHEMA } from "./response-policy.ts";
+import { recordFromResult, writeUsageRecord } from "./usage-log.ts";
 
 function resolveClaudeBin(): string {
   const candidates = [
@@ -404,6 +405,15 @@ function streamClaudeCLI(
             if (ev.is_error || ev.subtype === "error") {
               resultError = ev.error ?? ev.result ?? "claude CLI error";
             }
+            writeUsageRecord(recordFromResult(ev, {
+              ts: new Date().toISOString(),
+              model: model.id,
+              appendChars: appendParts.join("\n\n").length,
+              schemaChars: JSON.stringify(createOutputSchema(tools)).length,
+              toolDefChars: JSON.stringify(tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }))).length,
+              tools: tools.length,
+              historyMessages: history.length,
+            }));
           }
         }
       });
