@@ -17,7 +17,8 @@ Limits (PoC): node A is the single source of truth. There is no failover or repl
 | `src/node-server.ts` | Node HTTP adapter + `node:sqlite` storage shim; owner or gateway (`UPSTREAM_URL`) |
 | `scripts/node-up.ts` | `npm run node:up`: server + one MOCK worker in one terminal |
 | `scripts/bundle-node.mjs` | `npm run build:node`: two minified bundles in `dist/` for hosts without a checkout |
-| `deploy/aws/deploy.sh` · `bootstrap.sh` | create the tagged AWS node; `bootstrap.sh` is the (secret-free) EC2 user-data |
+| `deploy/aws/deploy.sh` · `bootstrap.sh` · `install-app.sh` | create the tagged AWS node; `bootstrap.sh` is the (secret-free) EC2 user-data; `install-app.sh` ships the app over SSM |
+| `deploy/aws/terraform/` | the same AWS setup as Terraform (validated and planned, not applied); see its README |
 | `deploy/aws/teardown.sh` | delete exactly the `project=dac-poc` resources |
 | `deploy/aws/verify.mjs` | prints PASS/FAIL evidence that two nodes share a room |
 | `scripts/gh-accounts.mjs` | GitHub account manager (below) |
@@ -39,6 +40,8 @@ deploy/aws/teardown.sh           # when done: deletes everything tagged project=
 What `deploy.sh up` creates, all tagged `project=dac-poc`: 1 EC2 `t4g.micro` (8 GB gp3, IMDSv2 only, auto-assigned public IPv4, no Elastic IP), 1 security group (tcp/443 only, no SSH), 1 IAM role + instance profile `dac-poc-ssm` (SSM agent + read of one parameter), 1 SecureString parameter `/dac-poc/env`. The app and secrets are installed over SSM Run Command; the secrets are read on the instance from the parameter, never passed on a command line.
 
 Secrets: the three tokens are generated once into `~/.dac-poc/env` (mode 0600, outside git). Read them from there; do not paste them into URLs or commands.
+
+The same resources are written as Terraform in `deploy/aws/terraform/` (`terraform init && terraform apply`); use either that or the shell scripts for one deployment, not both.
 
 Cost: about **USD 0.33/day** (t4g.micro 0.0084/h + public IPv4 0.005/h + 8 GB gp3). Teardown stops all of it.
 
