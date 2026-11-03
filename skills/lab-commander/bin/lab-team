@@ -10,10 +10,12 @@
 #   lab-team up   -p PREFIX [--parent NAME] [--cwd DIR] [--only builder,explorer,advisor]
 #   lab-team down -p PREFIX [--only ...]
 #   lab-team plan -p PREFIX [...]      print the open commands without running them
+# LAB_TEAM_OPEN_ARGS adds arguments to every `agent-cli-lab open`, for example --detached
+# to host the labs without opening terminal windows.
 set -eu
 
 usage() {
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit "${1:-2}"
 }
 
@@ -58,6 +60,8 @@ open_lab() { # role model parent
   role=$1 model=$2 lab_parent=$3
   name="$prefix-$role"
   set -- "$LAB_BIN" open -n "$name" --role "$role" --model "claude-cli/$model" --cwd "$cwd"
+  # shellcheck disable=SC2086 # word splitting of the extra arguments is intended
+  [ -z "${LAB_TEAM_OPEN_ARGS:-}" ] || set -- "$@" $LAB_TEAM_OPEN_ARGS
   [ -z "$lab_parent" ] || set -- "$@" --parent "$lab_parent"
   set -- "$@" -- env
   for var in $UNSET; do set -- "$@" -u "$var"; done

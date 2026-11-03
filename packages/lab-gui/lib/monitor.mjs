@@ -29,11 +29,16 @@ export function parseModel(model) {
 }
 
 const UNIT = { k: 1e3, K: 1e3, M: 1e6 };
+const NUM = String.raw`\d+(?:\.\d+)?`;
 const num = (text) => {
   if (text === undefined) return undefined;
-  const m = /^([\d.]+)([kKM]?)$/.exec(text);
+  const m = new RegExp(`^(${NUM})([kKM]?)$`).exec(text);
   return m ? Number.parseFloat(m[1]) * (UNIT[m[2]] ?? 1) : undefined;
 };
+// ↑in ↓out [R… W…] [CH…%] [$cost] [ctx%/window]; the window is only taken when it is not cut off by the screen edge.
+const FOOTER = new RegExp(
+  String.raw`↑\s*(${NUM}[kKM]?)\s+↓\s*(${NUM}[kKM]?)((?:\s+[RW]${NUM}[kKM]?)*)(?:\s+CH(${NUM})%)?(?:\s+\$(${NUM}))?(?:\s+(${NUM})%/(?:(${NUM}[kKM]?)(?![\d.…kKM]))?)?`,
+);
 
 /**
  * Reads Pi's footer line, e.g. `↑6 ↓350 R31k W23k CH36.7% $0.005 9.0%/200k (auto)`.
@@ -41,10 +46,10 @@ const num = (text) => {
  */
 export function parseUsage(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /↑\s*([\d.]+[kKM]?)\s+↓\s*([\d.]+[kKM]?)((?:\s+(?:R|W)[\d.]+[kKM]?)*)(?:\s+CH([\d.]+)%)?(?:\s+\$([\d.]+))?(?:\s+([\d.]+)%\/([\d.]+[kKM]?))?/.exec(lines[i]);
+    const m = FOOTER.exec(lines[i]);
     if (!m) continue;
-    const read = /\bR([\d.]+[kKM]?)/.exec(m[3] ?? "");
-    const write = /\bW([\d.]+[kKM]?)/.exec(m[3] ?? "");
+    const read = new RegExp(`\\bR(${NUM}[kKM]?)`).exec(m[3] ?? "");
+    const write = new RegExp(`\\bW(${NUM}[kKM]?)`).exec(m[3] ?? "");
     return {
       input: num(m[1]),
       output: num(m[2]),
@@ -53,7 +58,8 @@ export function parseUsage(lines) {
       cacheHitPct: m[4] === undefined ? undefined : Number.parseFloat(m[4]),
       costUsd: m[5] === undefined ? undefined : Number.parseFloat(m[5]),
       contextPct: m[6] === undefined ? undefined : Number.parseFloat(m[6]),
-      contextWindow: num(m[7]),
+      // Pi always prints the window with a unit (200k); a bare number means the screen cut it off.
+      contextWindow: num(m[7]) >= 1000 ? num(m[7]) : undefined,
     };
   }
   return undefined;

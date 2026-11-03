@@ -202,7 +202,7 @@ function renderSummary(snap) {
   if (t.gone) parts.push(count("gone", "✕", t.gone, "gone", "bad"));
   if (t.tokens > 0) parts.push(chip("", "tokens ", h("b", {}, fmtTokens(t.tokens)), " · ", h("b", {}, fmtCost(t.costUsd))));
   if (!state.connected) parts.push(chip("bad", "reconnecting…"));
-  $("summary").replaceChildren(...parts);
+  $("summary").replaceChildren(...parts.flatMap((p) => [p, " "]));
 }
 
 // ---------- panel ----------
@@ -225,12 +225,14 @@ function renderPanel() {
     ["Quiet", fmtDuration(lab.quietMs)],
     ["Tokens", u ? `${fmtTokens(u.input)} in · ${fmtTokens(u.output)} out · ${fmtTokens(u.cacheRead)} cache read · ${fmtTokens(u.cacheWrite)} written` : "not reported by this lab"],
     ["Cost", u?.costUsd != null ? `${fmtCost(u.costUsd)}${u.cacheHitPct != null ? ` · cache hit ${u.cacheHitPct}%` : ""}` : "–"],
-    ["Context", u?.contextPct != null ? `${u.contextPct}% of ${fmtTokens(u.contextWindow)}` : "–"],
+    ["Context", u?.contextPct != null ? `${u.contextPct}% of ${u.contextWindow ? fmtTokens(u.contextWindow) : "the"} context window` : "–"],
   ];
   $("p-meta").replaceChildren(...rows.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
   const spark = $("p-spark");
   spark.replaceChildren(s("polyline", { class: `spark-line state-${lab.state === "gone" ? "gone" : "working"}`, points: sparkPoints(lab.samples, 240, 36) }));
-  $("p-stop").disabled = lab.state === "gone";
+  const ended = lab.state === "gone";
+  $("p-form").querySelectorAll("button, textarea").forEach((el) => { el.disabled = ended; });
+  if (ended) $("p-screen").textContent = "(this lab has ended; its screen is no longer available)";
 }
 
 async function pollScreen() {
@@ -238,6 +240,7 @@ async function pollScreen() {
   const name = state.selected;
   if (!name) return;
   const pre = $("p-screen");
+  if (state.snap?.labs.find((l) => l.name === name)?.state === "gone") return;
   try {
     if (!document.hidden) {
       const data = await api(`/api/labs/${encodeURIComponent(name)}/screen?tail=60`);

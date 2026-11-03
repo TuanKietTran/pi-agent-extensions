@@ -16,6 +16,14 @@ test("parseUsage copes with partial footers and non-Pi screens", () => {
   assert.equal(u.costUsd, 0.5);
 });
 
+test("a context window cut off by the screen edge is dropped, not misread", () => {
+  const u = parseUsage(["↑6 ↓399 R42k W11k CH36.8% $0.003 9.0%/200..."]);
+  assert.equal(u.contextPct, 9);
+  assert.equal(u.contextWindow, undefined);
+  assert.equal(u.cacheRead, 42000);
+  assert.equal(parseUsage(["↑6 ↓399 $0.003 9.0%/200"]).contextWindow, undefined);
+});
+
 test("parseUsage uses the newest footer on the screen", () => {
   assert.equal(parseUsage(["↑1 ↓1 $0.001", "text", "↑9 ↓9 $0.009"]).costUsd, 0.009);
 });

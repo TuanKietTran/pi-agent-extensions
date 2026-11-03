@@ -27,6 +27,11 @@ PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p t2 --parent lead --only exp
 [ "$(wc -l < "$LAB_TEAM_CALLS")" -eq 1 ]
 grep -q '^open -n t2-explorer --role explorer .* --parent lead -- env ' "$LAB_TEAM_CALLS"
 
+# extra open arguments (headless hosting)
+: > "$LAB_TEAM_CALLS"
+LAB_TEAM_OPEN_ARGS=--detached PATH="$root/bin:$PATH" "$here/../bin/lab-team" up -p t4 --only advisor
+grep -q '^open -n t4-advisor --role advisor --model claude-cli/claude-opus-5-5 --cwd .* --detached .*-- env ' "$LAB_TEAM_CALLS"
+
 # plan prints and does not call the CLI
 : > "$LAB_TEAM_CALLS"
 out=$(PATH="$root/bin:$PATH" "$here/../bin/lab-team" plan -p t3)
