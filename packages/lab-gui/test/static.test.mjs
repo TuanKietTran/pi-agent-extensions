@@ -1,9 +1,10 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
-const dir = new URL("../public/", import.meta.url).pathname;
+const dir = fileURLToPath(new URL("../public/", import.meta.url));
 const files = readdirSync(dir).map((name) => [name, readFileSync(join(dir, name), "utf8")]);
 
 test("the page needs no inline styles, inline scripts or external hosts (its CSP forbids them)", () => {

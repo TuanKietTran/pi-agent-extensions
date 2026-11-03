@@ -72,7 +72,7 @@ Give the advisor the files or diff to read rather than a long retelling, and ask
 
 ## Lab GUI
 
-`lab-gui` (or `node packages/lab-gui/server.mjs --open`) serves a local browser view of the same graph at `http://127.0.0.1:4317/`: roles with their own shapes, live state, activity, model and token/cost counters, a live screen peek, message, stop (with confirmation) and attach. It binds loopback only and polls only while a page is open. See `packages/lab-gui/README.md`.
+`lab-gui` (or `node packages/lab-gui/server.mjs --open`) serves a local browser view of the same graph at `http://127.0.0.1:4317/`: roles with their own shapes, live state, activity, model and token/cost counters, a live screen peek, message, stop (with confirmation) and attach. It binds loopback only and polls only while a page is open. See `packages/lab-gui/README.md`. The same board as a desktop app for macOS and Windows: `packages/lab-gui-desktop`.
 
 ## Lab graph and console
 

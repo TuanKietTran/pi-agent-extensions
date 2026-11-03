@@ -1,14 +1,8 @@
 #!/usr/bin/env node
 // Local web GUI for agent-cli-lab. One command: `node server.mjs --open` (or `npm start`).
 // Binds 127.0.0.1 only. No external requests, no telemetry.
-import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
-import { createApp } from "./lib/app.mjs";
-import { createCli } from "./lib/cli.mjs";
-import { createMonitor } from "./lib/monitor.mjs";
-
-const HOST = "127.0.0.1";
+import { startGui } from "./lib/serve.mjs";
 
 function parseArgs(argv) {
   const opts = { port: Number(process.env.LAB_GUI_PORT) || 4317, open: false };
@@ -37,27 +31,18 @@ function openBrowser(url) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
-const key = randomBytes(24).toString("hex"); // goes into the printed URL, becomes a cookie
-const token = randomBytes(24).toString("hex"); // embedded in the page, required on every POST
-let boundPort = opts.port;
-const cli = createCli();
-const app = createApp({ cli, monitor: createMonitor({ cli }), key, token, port: () => boundPort });
-const server = createServer(app.handler);
-
-server.listen(opts.port, HOST, () => {
-  boundPort = server.address().port;
-  const url = `http://${HOST}:${boundPort}/?key=${key}`;
-  console.log(`lab-gui: ${url}  (Ctrl-C to stop; the link carries this launch's key)`);
-  if (opts.open) openBrowser(url);
-});
-server.on("error", (error) => {
+let gui;
+try {
+  gui = await startGui({ port: opts.port });
+} catch (error) {
   console.error(`lab-gui: ${error.message}`);
   process.exit(1);
-});
+}
+console.log(`lab-gui: ${gui.url}  (Ctrl-C to stop; the link carries this launch's key)`);
+if (opts.open) openBrowser(gui.url);
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    app.close();
-    server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 500).unref();
+    gui.close().then(() => process.exit(0));
   });
 }

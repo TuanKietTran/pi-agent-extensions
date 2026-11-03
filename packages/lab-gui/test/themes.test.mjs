@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import test from "node:test";
 import { loadThemes, parseColors } from "../lib/themes.mjs";
 import { contrast, ensureContrast, hexToRgb, mix, readableOn, themeVars } from "../public/theme.js";
 
-const THEMES_DIR = new URL("../themes", import.meta.url).pathname;
+const THEMES_DIR = fileURLToPath(new URL("../themes", import.meta.url));
 
 test("colour maths: contrast of black on white is 21, mixing is linear", () => {
   assert.equal(Math.round(contrast("#000000", "#ffffff")), 21);

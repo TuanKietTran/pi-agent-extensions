@@ -9,6 +9,8 @@ lab-gui --port 4400                          # after skills/lab-commander/instal
 
 The server prints a link such as `http://127.0.0.1:4317/?key=…` (default port; `--port 0` picks a free one) and `--open` opens it. The key in the link is the launch key: the page swaps it for a cookie and nothing is served without it, so open the printed link rather than the bare address. Needs Node 20 or newer and `agent-cli-lab` on `PATH` (override with `AGENT_CLI_LAB_BIN`). `AGENT_CLI_LAB_DIR` selects which labs it sees, exactly as for the CLI. There are no dependencies to install.
 
+Desktop apps for macOS and Windows that wrap this server live in [`../lab-gui-desktop`](../lab-gui-desktop).
+
 ## What it shows
 
 - **Graph**: lead to helpers, drawn left to right. Each role has its own shape and colour plus a letter badge, so it still reads without colour: builder (rounded rectangle, B), explorer (pill, E), advisor (cut-corner octagon, A), commander (hexagon), manager (square corners), worker (dashed). The three-role team from `lab-team` is Sonnet builds, Haiku explores, Opus reviews.
