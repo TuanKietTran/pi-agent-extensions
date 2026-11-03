@@ -36,7 +36,7 @@ fn send_bytes(socket: &Path, data: Vec<u8>) -> Result<()> {
 }
 
 /// `request` that gives up after `timeout`, for looking at hosts that may be hung.
-fn request_with_timeout(socket: &Path, value: Value, timeout: Duration) -> Result<Value> {
+pub(crate) fn request_with_timeout(socket: &Path, value: Value, timeout: Duration) -> Result<Value> {
     let (sender, receiver) = mpsc::channel();
     let socket = socket.to_path_buf();
     thread::spawn(move || {
@@ -48,7 +48,7 @@ fn request_with_timeout(socket: &Path, value: Value, timeout: Duration) -> Resul
 }
 
 /// `Ok(None)` for a host without the `status` operation.
-fn host_status(socket: &Path) -> Result<Option<Value>> {
+pub(crate) fn host_status(socket: &Path) -> Result<Option<Value>> {
     match request(socket, json!({ "op": "status" })) {
         Ok(value) => Ok(Some(value)),
         Err(error) if is_unknown_operation(&error) => Ok(None),
@@ -343,7 +343,7 @@ pub(crate) fn screen(args: ScreenArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn human_duration(milliseconds: u64) -> String {
+pub(crate) fn human_duration(milliseconds: u64) -> String {
     let seconds = milliseconds / 1000;
     match seconds {
         0..=59 => format!("{seconds}s"),
@@ -783,6 +783,15 @@ pub(crate) fn open(args: OpenArgs) -> Result<i32> {
     }
     if let Some(record) = &args.record {
         host.extend(["-r".into(), record.clone().into_os_string()]);
+    }
+    for (flag, value) in [
+        ("--role", &args.graph.role),
+        ("--parent", &args.graph.parent),
+        ("--model", &args.graph.model),
+    ] {
+        if let Some(value) = value {
+            host.extend([flag.into(), value.clone().into()]);
+        }
     }
     if window_here {
         // The window is the host's own console: the person types into it and sees it directly.

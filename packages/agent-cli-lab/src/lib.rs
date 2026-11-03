@@ -1,5 +1,6 @@
 mod commands;
 mod commander;
+mod console;
 mod conpty;
 mod control;
 mod ipc;
@@ -75,6 +76,8 @@ enum Commands {
     List(ListArgs),
     /// Show whether a session is working, asking or stalled, and its size and age.
     Status(StatusArgs),
+    /// k9s-style console of every lab: table, lab graph, live screens. Opens a new terminal window unless run in one.
+    Console(console::ConsoleArgs),
     /// End a session: stop its program and its host.
     Stop(StopArgs),
     /// Send named keys (Enter, Down, Esc, Ctrl-C, Down*3, ...) to a session.
@@ -127,9 +130,26 @@ struct HostArgs {
     /// console starts a selection that freezes the hosted program.
     #[arg(long)]
     quick_edit: bool,
+    #[command(flatten)]
+    graph: GraphArgs,
     /// Command and arguments. Place these after `--`.
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<OsString>,
+}
+
+/// Where a session sits in the lab graph that `console` draws.
+#[derive(Debug, Args, Clone, Default)]
+struct GraphArgs {
+    /// Role in the lab hierarchy, for example `manager` or `worker`. Left out, `console` infers it.
+    #[arg(long, value_name = "ROLE")]
+    role: Option<String>,
+    /// Session that opened this one. Defaults to $AGENT_CLI_LAB_SELF, which every hosted program
+    /// gets, so a worker opened from inside a manager lab is attached to it automatically.
+    #[arg(long, value_name = "NAME")]
+    parent: Option<String>,
+    /// Model shown by `console` (`provider/id`). Left out, it is read from `--model` in the command.
+    #[arg(long = "model", value_name = "PROVIDER/ID")]
+    model: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -496,6 +516,8 @@ struct OpenArgs {
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
+    #[command(flatten)]
+    graph: GraphArgs,
     /// Program and arguments. Place these after `--`.
     #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
     command: Vec<OsString>,
@@ -527,6 +549,7 @@ pub fn execute(cli: Cli) -> Result<i32> {
             None => commands::status(args),
         },
         Commands::Stop(args) => commands::stop(args),
+        Commands::Console(args) => console::run(args),
         Commands::Key(args) => commands::key(args),
         Commands::Wait(args) => match args.lab_name {
             Some(name) => commander::wait(&name, args.timeout, args.idle_ms.unwrap_or(1000)),
@@ -741,8 +764,12 @@ fn run(args: RunArgs) -> Result<i32> {
     record_exit(recorder, code)
 }
 
-fn host(args: HostArgs) -> Result<i32> {
+fn host(mut args: HostArgs) -> Result<i32> {
     validate_terminal(&args.terminal)?;
+    if let Some(name) = &args.target.name {
+        // The hosted program learns its own name, so labs it opens know who their parent is.
+        args.terminal.env.push(("AGENT_CLI_LAB_SELF".into(), name.clone()));
+    }
     if args.stdio {
         conpty::adopt_own_console();
     }
@@ -783,6 +810,14 @@ fn host(args: HostArgs) -> Result<i32> {
             cols: args.terminal.cols,
             rows: args.terminal.rows,
             started_ms: now_ms() as u64,
+            role: args.graph.role.clone(),
+            parent: args
+                .graph
+                .parent
+                .clone()
+                .or_else(|| env::var("AGENT_CLI_LAB_SELF").ok())
+                .filter(|parent| !parent.is_empty() && Some(parent) != args.target.name.as_ref()),
+            model: args.graph.model.clone(),
         })?),
         None => None,
     };
@@ -1017,17 +1052,26 @@ fn host_detached(socket: &Path, cols: u16, rows: u16, command: &[OsString]) -> R
 }
 
 fn open_attach_terminal(socket: &Path, terminal: Option<&str>) -> Result<()> {
+    open_terminal_window(
+        &["attach".into(), "-s".into(), socket.to_string_lossy().into_owned()],
+        terminal,
+    )
+}
+
+/// Open the default terminal (Ghostty on macOS) in a new window running `agent-cli-lab ARGV...`.
+pub(crate) fn open_terminal_window(argv: &[String], terminal: Option<&str>) -> Result<()> {
     let exe = env::current_exe().context("failed to resolve agent-cli-lab executable")?;
     let terminal = terminal
         .map(str::to_owned)
         .or_else(|| env::var("AGENT_CLI_LAB_TERMINAL").ok())
         .filter(|value| !value.trim().is_empty());
-    open_attach_terminal_impl(&exe, socket, terminal.as_deref())
+    open_terminal_impl(&exe, argv, terminal.as_deref())
 }
 
 #[cfg(target_os = "macos")]
-fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) -> Result<()> {
+fn open_terminal_impl(exe: &Path, argv: &[String], terminal: Option<&str>) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    let words = argv.iter().map(|word| shell_quote(word)).collect::<Vec<_>>().join(" ");
 
     let terminal = terminal.unwrap_or("ghostty").to_ascii_lowercase();
     if terminal == "ghostty" {
@@ -1042,16 +1086,20 @@ fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) 
                 let offset = 40 * (std::process::id() % 8) as i32;
                 // `-e` makes Ghostty ask "Allow Ghostty to execute ...?" on every launch. A command
                 // set from a config file does not, so write one and layer it over the user's config.
+                prune_old_ghostty_configs();
                 let config = env::temp_dir()
                     .join(format!("agent-cli-lab-ghostty-{}.conf", std::process::id()));
                 fs::write(
                     &config,
                     format!(
-                        "command = {} attach -s {}\nconfirm-close-surface = false\nquit-after-last-window-closed = true\nwindow-save-state = never\nwindow-position-x = {}\nwindow-position-y = {}\n",
+                        "command = {} {}\nconfirm-close-surface = false\nquit-after-last-window-closed = true\nwindow-save-state = never\nwindow-position-x = {}\nwindow-position-y = {}\nwindow-width = {}\nwindow-height = {}\ntitle = {}\n",
                         shell_quote(&exe.to_string_lossy()),
-                        shell_quote(&socket.to_string_lossy()),
+                        words,
                         80 + offset,
                         80 + offset,
+                        if argv.first().is_some_and(|word| word == "console") { 170 } else { 120 },
+                        if argv.first().is_some_and(|word| word == "console") { 48 } else { 36 },
+                        if argv.first().is_some_and(|word| word == "console") { "agent-cli-lab console" } else { "agent-cli-lab" },
                     ),
                 )
                 .with_context(|| format!("failed to write {}", config.display()))?;
@@ -1077,9 +1125,9 @@ fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) 
         std::process::id()
     ));
     let body = format!(
-        "#!/bin/sh\nexec {} attach -s {}\n",
+        "#!/bin/sh\nexec {} {}\n",
         shell_quote(&exe.to_string_lossy()),
-        shell_quote(&socket.to_string_lossy()),
+        words,
     );
     fs::write(&script, body).with_context(|| format!("failed to write {}", script.display()))?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700))
@@ -1096,14 +1144,12 @@ fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) 
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) -> Result<()> {
+fn open_terminal_impl(exe: &Path, argv: &[String], terminal: Option<&str>) -> Result<()> {
     if let Some(terminal) = terminal {
         Command::new(terminal)
             .arg("-e")
             .arg(exe)
-            .arg("attach")
-            .arg("-s")
-            .arg(socket)
+            .args(argv)
             .spawn()
             .with_context(|| format!("failed to open terminal {terminal}"))?;
         return Ok(());
@@ -1119,9 +1165,7 @@ fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) 
         command
             .args(*prefix)
             .arg(exe)
-            .arg("attach")
-            .arg("-s")
-            .arg(socket);
+            .args(argv);
         if command.spawn().is_ok() {
             return Ok(());
         }
@@ -1132,20 +1176,32 @@ fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) 
 }
 
 #[cfg(windows)]
-fn open_attach_terminal_impl(exe: &Path, socket: &Path, terminal: Option<&str>) -> Result<()> {
+fn open_terminal_impl(exe: &Path, argv: &[String], terminal: Option<&str>) -> Result<()> {
     Command::new(terminal.unwrap_or("cmd"))
-        .args([
-            "/C",
-            "start",
-            "",
-            &exe.to_string_lossy(),
-            "attach",
-            "-s",
-            &socket.to_string_lossy(),
-        ])
+        .args(["/C", "start", "", &exe.to_string_lossy()])
+        .args(argv)
         .spawn()
         .context("failed to open a Windows Terminal window")?;
     Ok(())
+}
+
+/// Ghostty reads its config file once, at launch, so earlier windows' files are dead weight.
+#[cfg(target_os = "macos")]
+fn prune_old_ghostty_configs() {
+    let cutoff = Duration::from_secs(10 * 60);
+    for item in fs::read_dir(env::temp_dir()).into_iter().flatten().flatten() {
+        let name = item.file_name();
+        let name = name.to_string_lossy();
+        let stale = item
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > cutoff);
+        if name.starts_with("agent-cli-lab-ghostty-") && name.ends_with(".conf") && stale {
+            let _ = fs::remove_file(item.path());
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
