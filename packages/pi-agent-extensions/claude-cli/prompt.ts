@@ -3,10 +3,12 @@
  * can be tested without Pi.
  *
  * Token budget rules this file implements (measurements in docs/TOKEN-DIET.md):
- * - Conversation history travels as one text block per message in the user turn,
- *   not inside the system prompt. Blocks are byte-stable from turn to turn, so the
- *   API's prompt cache hits on everything already sent and only the new messages
- *   are written. Inside the system prompt every turn changed the prefix.
+ * - Conversation history travels as one text block per message in the user turn, not
+ *   inside the system prompt. The system prompt (Pi's prompt, bridge rules, response
+ *   policy) is then identical on every turn and is read from the prompt cache; with the
+ *   history inside it, every turn changed the system prompt and rewrote all of it
+ *   (measured: about 3.4x more cache-write tokens). The history blocks themselves are
+ *   still re-sent as new tokens each turn; see "What did not help" in docs/TOKEN-DIET.md.
  * - Tool schemas are sent once, as the MCP tool list. The prompt carries compact
  *   signatures only, as a fallback hint if the MCP list is missing.
  * - Tool call ids are replaced by short stable labels, and unusually large older

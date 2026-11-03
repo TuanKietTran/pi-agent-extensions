@@ -18,6 +18,8 @@
 //   --label <text>     name used in the report
 //   --env K=V          extra environment for pi (repeatable), e.g. a provider switch
 //   --out <file>       also write the raw numbers as JSON
+//   --full-tools       also load the bundled extensions that add Pi tools (browser, jobs, ...),
+//                      to measure with a realistic, much larger tool set
 //   --keep             keep the scratch repo (default: delete it)
 //
 // Needs `pi` and `claude` on PATH and a logged-in Claude CLI. Real API usage: a run is
@@ -29,6 +31,17 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/** Extension entry points (relative to the package root) that register extra Pi tools. */
+export const TOOL_EXTENSIONS = [
+  "core/index.ts",
+  "gc-assets/index.ts",
+  "thinking-control.ts",
+  "usage-roundrobin.ts",
+  "remote-control.ts",
+  "touchbar-usage/index.ts",
+  "browser-control/index.ts",
+];
 
 export const SCENARIO_STEPS = [
   "List the files in the current directory with bash (ls -la).",
@@ -121,7 +134,7 @@ export function totals(turns) {
 }
 
 function parseArgs(argv) {
-  const opts = { ext: resolve(here, "..", "index.ts"), model: "claude-haiku-5-5", runs: 1, thinking: "off", label: "run", env: {}, out: undefined, keep: false };
+  const opts = { ext: resolve(here, "..", "index.ts"), model: "claude-haiku-5-5", runs: 1, thinking: "off", label: "run", env: {}, out: undefined, keep: false, fullTools: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -132,6 +145,7 @@ function parseArgs(argv) {
     else if (a === "--label") opts.label = next();
     else if (a === "--out") opts.out = resolve(next());
     else if (a === "--keep") opts.keep = true;
+    else if (a === "--full-tools") opts.fullTools = true;
     else if (a === "--env") { const [k, ...v] = next().split("="); opts.env[k] = v.join("="); }
     else throw new Error(`unknown option ${a}`);
   }
@@ -152,10 +166,11 @@ function runOnce(opts, index) {
   return new Promise((resolveRun, reject) => {
     const args = [
       "--no-extensions", "-e", opts.ext,
+      ...(opts.fullTools ? TOOL_EXTENSIONS.flatMap((rel) => ["-e", resolve(here, "..", "..", rel)]) : []),
       "--provider", "claude-cli", "--model", opts.model,
       "--thinking", opts.thinking,
       "--no-session", "--no-skills", "--no-context-files", "--no-prompt-templates",
-      "--tools", "read,bash,edit,write",
+      ...(opts.fullTools ? [] : ["--tools", "read,bash,edit,write"]),
       "--mode", "json", "-p", SCENARIO_PROMPT,
     ];
     const started = Date.now();
@@ -188,7 +203,7 @@ function runOnce(opts, index) {
         ? readFileSync(usageLog, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l))
         : [];
       spawns.forEach((s, i) => { if (turns[i]) turns[i].apiTurns = s.apiTurns; });
-      const sizes = spawns[0] ? { appendChars: spawns[0].appendChars, schemaChars: spawns[0].schemaChars, toolDefChars: spawns[0].toolDefChars } : undefined;
+      const sizes = spawns[0] ? { tools: spawns[0].tools, appendChars: spawns[0].appendChars, schemaChars: spawns[0].schemaChars, toolDefChars: spawns[0].toolDefChars } : undefined;
       rmSync(usageLog, { force: true });
       const outcome = verifyScratchRepo(repo);
       if (!opts.keep) rmSync(repo, { recursive: true, force: true });

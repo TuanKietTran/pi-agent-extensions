@@ -38,8 +38,15 @@ Pi remains responsible for tools:
 - The MCP bridge records requests but never executes tool implementations; requested calls are emitted as real Pi `ToolCall` blocks.
 - Pi validates and executes each call, emits the normal tool lifecycle events, and returns the result on the next turn.
 - The loopback server uses an ephemeral port and per-turn bearer token, then removes its temporary config when the turn ends.
+- Pi only needs Claude's first message when it requests tools, so the `claude` process is stopped as soon as every requested call is captured. This is one API request per tool call instead of three.
 
 This means Pi options such as `--tools write` and `--exclude-tools bash` are respected by the `claude-cli` provider. A recent Claude CLI with `--json-schema`, `--setting-sources`, and streamable HTTP MCP support is required.
+
+## Token use
+
+Each Pi turn spawns a fresh `claude -p`. The prompt is built to keep that cheap: Claude Code's default system prompt is replaced by a short stub, the conversation travels as one block per message in the user turn (so Pi's own prompt stays byte-identical and cached), tool schemas are sent once through the MCP list, and tool call ids are shortened. On the repeatable ten-step scenario this cut tokens per run from about 200k to 52k (Haiku, four tools) and from 342k to 110k with eighteen tools. Method, numbers, ablations and what did not help: [docs/TOKEN-DIET.md](docs/TOKEN-DIET.md). Measure your own setup with `node claude-cli/scripts/measure-tokens.mjs`.
+
+Environment variables: `PI_CLAUDE_CLI_USAGE_LOG=<file>` appends one JSON line of usage per spawned process; `PI_CLAUDE_CLI_ADVISOR=<model>` passes `--advisor <model>` to `claude` (off by default: it adds about 1.6k input tokens to every request).
 
 ## Response behavior
 
