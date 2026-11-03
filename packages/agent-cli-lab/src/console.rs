@@ -28,6 +28,7 @@ const ORANGE: Color = Color::Rgb(255, 165, 0);
 const GREEN: Color = Color::Rgb(50, 205, 50);
 const RED: Color = Color::Rgb(255, 69, 58);
 const YELLOW: Color = Color::Rgb(255, 215, 0);
+const PURPLE: Color = Color::Rgb(186, 120, 255);
 const GRAY: Color = Color::Rgb(128, 128, 128);
 const DIM: Color = Color::Rgb(90, 90, 90);
 
@@ -1146,11 +1147,7 @@ fn draw_labs(frame: &mut Frame, area: Rect, app: &mut App) {
         let name = if tree { format!("{}{}", lab.prefix, lab.name()) } else { lab.name().to_owned() };
         let mut cells = vec![
             Cell::from(name).style(Style::default().fg(AQUA)),
-            Cell::from(lab.role.clone()).style(Style::default().fg(match lab.role.as_str() {
-                "manager" => PINK,
-                "worker" => BLUE,
-                _ => GRAY,
-            })),
+            Cell::from(lab.role.clone()).style(Style::default().fg(role_color(&lab.role))),
         ];
         if medium {
             cells.push(Cell::from(lab.parent.clone().unwrap_or_else(|| "-".into())).style(Style::default().fg(GRAY)));
@@ -1443,8 +1440,8 @@ fn draw_models(frame: &mut Frame, area: Rect, app: &mut App) {
         Row::new(vec![
             Cell::from(model.clone()).style(Style::default().fg(family)),
             Cell::from(labs.len().to_string()),
-            Cell::from(n(&|l| l.role == "manager")),
-            Cell::from(n(&|l| l.role == "worker")),
+            Cell::from(n(&|l| is_lead(&l.role))),
+            Cell::from(n(&|l| !is_lead(&l.role) && l.role != "lab")),
             Cell::from(n(&|l| matches!(l.state(), "working" | "up"))).style(Style::default().fg(GREEN)),
             Cell::from(n(&|l| l.state() == "asking")).style(Style::default().fg(YELLOW)),
             Cell::from(n(&|l| l.state() == "stalled")).style(Style::default().fg(ORANGE)),
@@ -1453,6 +1450,24 @@ fn draw_models(frame: &mut Frame, area: Rect, app: &mut App) {
     let widths = [Constraint::Min(30), Constraint::Length(6), Constraint::Length(10), Constraint::Length(9), Constraint::Length(9), Constraint::Length(8), Constraint::Length(9)];
     let table = Table::new(rows, widths).header(head).block(titled_block("models", groups.len(), groups.len(), &app.filter)).column_spacing(2);
     frame.render_widget(table, area);
+}
+
+/// Colour of a role in the console. `builder`, `explorer` and `advisor` are the three-role team
+/// (`lab-team`): the builder leads, the explorer reads, the advisor reviews.
+fn role_color(role: &str) -> Color {
+    match role {
+        "manager" => PINK,
+        "builder" => ORANGE,
+        "explorer" => AQUA,
+        "advisor" => PURPLE,
+        "worker" => BLUE,
+        _ => GRAY,
+    }
+}
+
+/// Roles that lead other labs; the models view counts them under MANAGERS.
+fn is_lead(role: &str) -> bool {
+    matches!(role, "manager" | "builder")
 }
 
 fn draw_crumbs(frame: &mut Frame, area: Rect, app: &App) {
@@ -1789,6 +1804,19 @@ mod tests {
         let (a, b) = (find("w1").row, find("w2").row);
         assert!(a < b);
         assert_eq!(find("mgr1").row, (a + b) / 2 - (a + b) / 2 % 2);
+    }
+
+    #[test]
+    fn team_roles_have_their_own_colours() {
+        let roles = ["builder", "explorer", "advisor", "manager", "worker"];
+        let colours: Vec<Color> = roles.iter().map(|r| role_color(r)).collect();
+        for (i, a) in colours.iter().enumerate() {
+            for b in &colours[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        assert_eq!(role_color("anything else"), GRAY);
+        assert!(is_lead("builder") && is_lead("manager") && !is_lead("explorer"));
     }
 
     #[test]
