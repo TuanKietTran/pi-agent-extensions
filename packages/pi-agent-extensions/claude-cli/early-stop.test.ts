@@ -2,45 +2,74 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { EarlyStop, HOST_TOOL_PREFIX } from "./early-stop.ts";
 
+const active = new Set(["read", "bash"]);
 const start = { type: "message_start" };
-const toolBlock = (name: string) => ({ type: "content_block_start", content_block: { type: "tool_use", name } });
 const stop = { type: "message_stop" };
+const toolStart = (index: number, name: string) => ({ type: "content_block_start", index, content_block: { type: "tool_use", name } });
+const delta = (index: number, partial_json: string) => ({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json } });
 
-test("stops once the message is complete and every announced host call is captured", () => {
-  const s = new EarlyStop();
-  s.observe(start);
-  s.observe(toolBlock(`${HOST_TOOL_PREFIX}read`));
-  s.observe(toolBlock(`${HOST_TOOL_PREFIX}bash`));
-  s.captureOne();
-  s.observe(stop);
-  assert.equal(s.shouldStop(), false, "one of two calls still missing");
-  s.captureOne();
-  assert.equal(s.shouldStop(), true);
-  assert.equal(s.shouldStop(), false, "reports the stop only once");
+function run(events: unknown[], tools = active) {
+  const s = new EarlyStop(tools);
+  let last;
+  for (const e of events) last = s.observe(e) ?? last;
+  return last;
+}
+
+test("a message of host tool calls ends in a stop with the calls read from the stream", () => {
+  const decision = run([
+    start,
+    { type: "content_block_start", index: 0, content_block: { type: "text" } },
+    toolStart(1, `${HOST_TOOL_PREFIX}read`),
+    delta(1, '{"path":'),
+    delta(1, '"a.txt"}'),
+    toolStart(2, `${HOST_TOOL_PREFIX}bash`),
+    delta(2, '{"command":"ls"}'),
+    stop,
+  ]);
+  assert.deepEqual(decision, {
+    stop: true,
+    calls: [
+      { name: "read", arguments: { path: "a.txt" } },
+      { name: "bash", arguments: { command: "ls" } },
+    ],
+  });
 });
 
-test("a capture that arrives before the message ends does not stop early", () => {
-  const s = new EarlyStop();
-  s.observe(start);
-  s.observe(toolBlock(`${HOST_TOOL_PREFIX}read`));
-  s.captureOne();
-  assert.equal(s.shouldStop(), false);
-  s.observe(stop);
-  assert.equal(s.shouldStop(), true);
+test("a call without arguments is an empty object", () => {
+  assert.deepEqual(run([start, toolStart(0, `${HOST_TOOL_PREFIX}read`), stop]), { stop: true, calls: [{ name: "read", arguments: {} }] });
 });
 
-test("a plain text or structured-output message never stops the process", () => {
-  const s = new EarlyStop();
+test("text-only messages decide nothing; a later tool message still can", () => {
+  const s = new EarlyStop(active);
+  assert.equal(s.observe(start), undefined);
+  assert.equal(s.observe({ type: "content_block_start", index: 0, content_block: { type: "text" } }), undefined);
+  assert.equal(s.observe(stop), undefined);
   s.observe(start);
-  s.observe({ type: "content_block_start", content_block: { type: "text" } });
-  s.observe(toolBlock("StructuredOutput"));
-  s.observe(stop);
-  assert.equal(s.shouldStop(), false);
+  s.observe(toolStart(0, `${HOST_TOOL_PREFIX}read`));
+  s.observe(delta(0, "{}"));
+  assert.equal(s.observe(stop)?.stop, true);
 });
 
-test("ignores garbage events", () => {
-  const s = new EarlyStop();
-  s.observe(undefined);
-  s.observe({});
-  assert.equal(s.shouldStop(), false);
+test("structured output mixed with host calls, unknown tools and broken arguments fall back to the normal flow", () => {
+  assert.deepEqual(run([start, toolStart(0, `${HOST_TOOL_PREFIX}read`), delta(0, "{}"), toolStart(1, "StructuredOutput"), delta(1, "{}"), stop]), { stop: false });
+  assert.deepEqual(run([start, toolStart(0, `${HOST_TOOL_PREFIX}nope`), delta(0, "{}"), stop]), { stop: false });
+  assert.deepEqual(run([start, toolStart(0, `${HOST_TOOL_PREFIX}read`), delta(0, '{"path":'), stop]), { stop: false });
+  assert.deepEqual(run([start, toolStart(0, `${HOST_TOOL_PREFIX}read`), delta(0, "[1]"), stop]), { stop: false });
+});
+
+test("once disabled or finished, later messages are ignored", () => {
+  const s = new EarlyStop(active);
+  s.observe(start);
+  s.observe(toolStart(0, "StructuredOutput"));
+  assert.deepEqual(s.observe(stop), { stop: false });
+  s.observe(start);
+  s.observe(toolStart(0, `${HOST_TOOL_PREFIX}read`));
+  assert.equal(s.observe(stop), undefined);
+});
+
+test("garbage events are ignored", () => {
+  const s = new EarlyStop(active);
+  assert.equal(s.observe(undefined), undefined);
+  assert.equal(s.observe({}), undefined);
+  assert.equal(s.observe({ type: "content_block_delta", index: 9, delta: { type: "input_json_delta", partial_json: "x" } }), undefined);
 });

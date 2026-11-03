@@ -60,7 +60,7 @@ import { startMcpServer, type McpHandle } from "./mcp.ts";
 import { estimateCostUsd } from "./cost-estimate.ts";
 import { advisorArgs } from "./cli-args.ts";
 import { EarlyStop } from "./early-stop.ts";
-import { BASE_SYSTEM_PROMPT, buildTranscriptBlocks, createOutputSchema, createToolBridgePrompt } from "./prompt.ts";
+import { baseSystemPrompt, buildTranscriptBlocks, createOutputSchema, createToolBridgePrompt, trailingBatch } from "./prompt.ts";
 import { RESPONSE_POLICY, TEXT_OUTPUT_SCHEMA } from "./response-policy.ts";
 import { recordFromResult, writeUsageRecord } from "./usage-log.ts";
 
@@ -152,20 +152,16 @@ function streamClaudeCLI(
       const tools = getCurrentTools(context);
       const systemPrompt = getCurrentSystemPrompt(context);
       const capturedCalls: ToolCall[] = [];
-      // Pi only needs Claude's first message when it requests host tools. Once every
-      // requested call is captured the process is stopped; the capture handlers
-      // wait until then so Claude Code never starts the follow-up API calls.
-      const earlyStop = new EarlyStop();
+      // Pi only needs Claude's first message when it requests host tools. The calls are read
+      // from that message's stream and the process is stopped at once (see early-stop.ts); the
+      // capture handlers wait for that decision so Claude Code never starts the follow-up API
+      // calls, and are released when the decision is "carry on" or the process ends.
+      const earlyStop = new EarlyStop(new Set(tools.map((tool) => tool.name)));
+      let streamCalls: ToolCall[] | undefined;
       let earlyStopped = false;
       let stopProcess: () => void = () => {};
       let releaseHandlers: () => void = () => {};
       const handlersReleased = new Promise<void>((resolve) => { releaseHandlers = resolve; });
-      const maybeStop = () => {
-        if (!earlyStop.shouldStop()) return;
-        earlyStopped = true;
-        releaseHandlers();
-        stopProcess();
-      };
       if (tools.length > 0) {
         mcp = await startMcpServer(
           "pi-host",
@@ -180,8 +176,6 @@ function streamClaudeCLI(
                 name: tool.name,
                 arguments: args,
               });
-              earlyStop.captureOne();
-              maybeStop();
               let timer: ReturnType<typeof setTimeout> | undefined;
               await Promise.race([
                 handlersReleased,
@@ -233,7 +227,7 @@ function streamClaudeCLI(
         "--permission-prompts", "none",
         "--no-session-persistence",
         "--json-schema", JSON.stringify(createOutputSchema(tools, TEXT_OUTPUT_SCHEMA)),
-        "--system-prompt", BASE_SYSTEM_PROMPT,
+        "--system-prompt", baseSystemPrompt(),
         "--append-system-prompt-file", appendFile,
       ];
       args.push(...advisorArgs());
@@ -249,7 +243,7 @@ function streamClaudeCLI(
       };
       proc.on("close", removeAppendFile);
       proc.on("error", removeAppendFile);
-      proc.stdin.end(createClaudeStreamInput(lastMsg, transcript));
+      proc.stdin.end(createClaudeStreamInput(trailingBatch(messages), transcript));
 
       stream.push({ type: "start", partial: output });
 
@@ -282,8 +276,20 @@ function streamClaudeCLI(
 
           if (ev.type === "stream_event") {
             const e = ev.event;
-            earlyStop.observe(e);
-            if (e.type === "message_stop") maybeStop();
+            const decision = earlyStop.observe(e);
+            if (decision?.stop) {
+              streamCalls = decision.calls.map((call) => ({
+                type: "toolCall" as const,
+                id: `claude_cli_${randomUUID()}`,
+                name: call.name,
+                arguments: call.arguments as ToolCall["arguments"],
+              }));
+              earlyStopped = true;
+              releaseHandlers();
+              stopProcess();
+            } else if (decision) {
+              releaseHandlers();
+            }
 
             if (e.type === "message_start" && e.message?.usage) {
               const u = e.message.usage;
@@ -354,11 +360,12 @@ function streamClaudeCLI(
 
       await new Promise<void>((resolve, reject) => {
         proc.on("close", (code) => {
+          releaseHandlers();
           if (code === 0 || earlyStopped) resolve();
           else reject(new Error(resultError ?? `claude exited ${code}: ${stderrBuf.slice(0, 500)}`));
         });
         proc.on("error", reject);
-        options?.signal?.addEventListener("abort", () => proc.kill("SIGTERM"));
+        options?.signal?.addEventListener("abort", () => proc.kill("SIGTERM"), { once: true });
       });
 
       if (earlyStopped) {
@@ -380,7 +387,9 @@ function streamClaudeCLI(
       // structured final output. Those calls are requests only: emit them as
       // Pi ToolCall blocks and discard Claude's acknowledgement text. Keep the
       // structured-output path as a fallback for models that follow it directly.
-      const result = capturedCalls.length > 0
+      const result = streamCalls
+        ? { text: "", toolCalls: streamCalls }
+        : capturedCalls.length > 0
         ? { text: "", toolCalls: capturedCalls }
         : parseStructuredOutput(structuredOutput, tools);
 

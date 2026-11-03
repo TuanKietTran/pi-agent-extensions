@@ -29,6 +29,12 @@ const HISTORY_RESULT_TAIL = 2_000;
 export const BASE_SYSTEM_PROMPT =
   "You are the model behind a coding-agent host called Pi. Follow the host instructions below. Claude Code's native tools are not available; act only through the host tools described there.";
 
+/** The stub plus today's date, which Claude Code's own prompt would otherwise have supplied. */
+export function baseSystemPrompt(now: Date = new Date()): string {
+  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return `${BASE_SYSTEM_PROMPT} Today's date: ${date}.`;
+}
+
 export const HISTORY_HEADER =
   "Conversation so far, oldest first. Respond to the last entry; earlier entries are context.";
 
@@ -81,12 +87,26 @@ export function formatMessage(message: Message, labels: Map<string, string>, opt
   return `Assistant: ${blocks.join("\n")}`;
 }
 
-/** One entry per non-empty message; older ones capped, the newest kept whole. */
+/**
+ * The newest entry, or, when the conversation ends in tool results, the whole run of
+ * them: results of parallel calls arrive as separate messages and the model needs
+ * every one of them in full, with their images.
+ */
+export function trailingBatch(messages: Message[]): Message[] {
+  let start = messages.length - 1;
+  if (start < 0) return [];
+  if (messages[start].role === "toolResult") {
+    while (start > 0 && messages[start - 1].role === "toolResult") start--;
+  }
+  return messages.slice(start);
+}
+
+/** One entry per non-empty message; older ones capped, the newest batch kept whole. */
 export function buildTranscriptBlocks(messages: Message[]): string[] {
   const labels = labelToolCalls(messages);
-  const last = messages.length - 1;
+  const batchStart = messages.length - trailingBatch(messages).length;
   const blocks = messages
-    .map((message, index) => formatMessage(message, labels, { cap: index < last }))
+    .map((message, index) => formatMessage(message, labels, { cap: index < batchStart }))
     .filter((part) => part.trim());
   return [HISTORY_HEADER, ...blocks];
 }

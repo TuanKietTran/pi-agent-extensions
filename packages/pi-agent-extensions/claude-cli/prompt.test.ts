@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   BASE_SYSTEM_PROMPT,
+  baseSystemPrompt,
+  trailingBatch,
   HISTORY_HEADER,
   HISTORY_RESULT_LIMIT,
   buildTranscriptBlocks,
@@ -85,4 +87,21 @@ test("output schema enumerates tool names and forbids calls when there are no to
 test("base system prompt is short and names the host", () => {
   assert.ok(BASE_SYSTEM_PROMPT.length < 400);
   assert.match(BASE_SYSTEM_PROMPT, /Pi/);
+});
+
+test("a batch of parallel tool results is kept whole and travels together", () => {
+  const big = "B".repeat(HISTORY_RESULT_LIMIT + 100);
+  const messages: any[] = [user("go"), assistantCall("i1", "read", {}), result("i1", "read", big), result("i2", "read", big)];
+  assert.equal(trailingBatch(messages).length, 2);
+  const blocks = buildTranscriptBlocks(messages);
+  assert.ok(blocks[3].includes(big) && blocks[4].includes(big), "no result of the current batch is cut");
+  const later = buildTranscriptBlocks([...messages, assistantCall("i3", "bash", {}), result("i3", "bash", "ok")]);
+  assert.match(later[3], /omitted from this older tool result/);
+  assert.deepEqual(trailingBatch([user("a"), user("b")]).length, 1);
+  assert.deepEqual(trailingBatch([]), []);
+});
+
+test("the system stub carries today's date", () => {
+  assert.match(baseSystemPrompt(new Date(2026, 10, 3)), /Today's date: 2026-11-03\./);
+  assert.ok(baseSystemPrompt().startsWith(BASE_SYSTEM_PROMPT));
 });
