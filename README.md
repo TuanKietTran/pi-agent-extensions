@@ -1,5 +1,8 @@
 # pi-agent-extensions
 
+> **This repository is archived and no longer maintained.**
+> Development continues in **[TuanKietTran/agent-toolkit](https://github.com/TuanKietTran/agent-toolkit)**.
+
 A collection of tools for working with coding agents (Pi, Claude Code, Codex). See each package family and the root skill collection for details.
 
 | Package | What it is |
